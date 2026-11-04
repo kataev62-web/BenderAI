@@ -31,6 +31,18 @@ jobs:
       - name: Publish test diagnostics
         if: always()
         run: python scripts/ci_summary.py test-results.xml
+      - name: Report native process protection context
+        run: |
+          @'
+          import os
+          from bender_ai.windows import check_process_access
+          from bender_ai.security import Denied
+          try:
+              check_process_access(os.getpid())
+              print('::notice title=Native integrity::Runner process is a permitted non-elevated target')
+          except Denied as exc:
+              print('::notice title=Native integrity::' + str(exc))
+          '@ | python
       - name: Package and smoke test frozen executable
         shell: pwsh
         run: ./scripts/build_windows.ps1

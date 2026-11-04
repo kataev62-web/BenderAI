@@ -580,7 +580,8 @@ def _record_events(connection, windows, policy_data, literal_text):
                     active = None
     except Exception as exc:
         try:
-            connection.send(('error','Запись UIA недоступна: '+type(exc).__name__))
+            connection.send(('error','Запись UIA недоступна: '+type(exc).__name__
+                             + (': '+str(exc) if isinstance(exc, Denied) else '')))
         except (OSError,EOFError):
             pass
     finally:

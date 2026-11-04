@@ -36,7 +36,8 @@ def test_native_form_record_save_restart_replay_and_moved_button(tmp_path):
         return Selector(app,title,str(ident),kind)
     capture = None
     try:
-        eventually(lambda: bridge.ui.exists(selector(1001,'Edit')))
+        eventually(lambda: bridge.ui.window_exists(selector(1001,'Edit')))
+        assert bridge.ui.exists(selector(1001,'Edit'))
         recorder = Recorder(app,title)
         recorder.start()
         capture = WindowsCapture(bridge.ui,recorder)
