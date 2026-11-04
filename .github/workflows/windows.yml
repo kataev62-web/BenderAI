@@ -1,0 +1,40 @@
+name: Windows validation and package
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+          cache: pip
+      - name: Install
+        run: python -m pip install -c constraints.txt -e ".[dev]"
+      - name: Compile and validate dependencies
+        run: |
+          python -m compileall -q src tests
+          python -m pip check
+      - name: Unit and portable integration tests
+        run: python -m pytest -m "not windows" -q --junitxml=test-results.xml
+      - name: Package and smoke test frozen executable
+        shell: pwsh
+        run: ./scripts/build_windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BenderAI-windows-x64
+          path: dist/BenderAI-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results.xml

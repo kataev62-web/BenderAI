@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bender-ai-desktop"
+version = "0.1.0"
+description = "Local-first Windows desktop assistant with explicit permissions"
+requires-python = ">=3.12,<3.14"
+dependencies = ["PySide6==6.8.3", "keyring==25.6.0", "pywinauto==0.6.9; sys_platform == 'win32'", "pywin32==310; sys_platform == 'win32'"]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.5", "pyinstaller==6.12.0"]
+
+[project.scripts]
+bender-ai = "bender_ai.app:main"
+bender-training-form = "bender_ai.training_form:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = ["windows: requires an interactive Windows desktop"]
