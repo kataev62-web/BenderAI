@@ -5,7 +5,8 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QLa
     QComboBox, QPlainTextEdit, QMessageBox, QInputDialog)
 from .models import Plan, Step, SCHEMAS
 
-LABELS = {'uia_click': 'Нажать кнопку', 'uia_set_text': 'Ввести текст', 'wait_for_element': 'Ждать элемент',
+LABELS = {'uia_select': 'Выбрать элемент', 'uia_toggle': 'Переключить (on/off)',
+          'uia_expand': 'Раскрыть / свернуть', 'wait_for_window': 'Ждать окно', 'uia_click': 'Нажать кнопку', 'uia_set_text': 'Ввести текст', 'wait_for_element': 'Ждать элемент',
           'assert_element': 'Проверить элемент', 'open_app': 'Открыть приложение', 'open_folder': 'Открыть папку',
           'create_folder': 'Создать папку', 'get_active_window': 'Активное окно', 'list_skills': 'Список навыков',
           'focus_window': 'Выбрать окно', 'list_folder': 'Содержимое папки', 'stop': 'Стоп',
@@ -31,7 +32,7 @@ class StepDialog(QDialog):
                 field = QLineEdit(str(value))
                 self.fields[key] = field
                 form.addRow({'text': 'Текст / ${параметр}', 'timeout': 'Таймаут, сек.', 'expected_state': 'exists / enabled / visible / text:значение',
-                             'app_id': 'notepad / calculator / explorer', 'parent': 'Родительская папка', 'name': 'Имя папки'}.get(key,key), field)
+                             'state': 'on / off; expanded / collapsed', 'app_id': 'notepad / calculator / explorer', 'parent': 'Родительская папка', 'name': 'Имя папки'}.get(key,key), field)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.validate)
         buttons.rejected.connect(self.reject)
@@ -61,13 +62,16 @@ class SkillEditor(QDialog):
         layout.addWidget(self.name)
         layout.addWidget(QLabel('Параметры (латиницей через запятую); значения вводятся при запуске'))
         layout.addWidget(self.params)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(['Действие', 'Цель', 'Значение / проверка'])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(['Действие', 'Приложение', 'Окно', 'Элемент / цель', 'Значение / проверка'])
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.cellDoubleClicked.connect(lambda *_: self.edit())
         layout.addWidget(self.table)
         row = QHBoxLayout()
-        for title, fn in [('Изменить', self.edit), ('Удалить шаг', self.remove), ('Вверх', self.up), ('Добавить проверку', self.add_assert), ('JSON…', self.advanced)]:
+        for index, (title, fn) in enumerate([('Изменить', self.edit), ('Удалить шаг', self.remove), ('Вверх', self.up), ('Вниз', self.down), ('Добавить проверку', self.add_assert), ('Ждать окно', self.add_wait_window), ('Ждать элемент', self.add_wait_element), ('Выбрать окно', self.add_focus_window), ('JSON…', self.advanced)]):
+            if index == 4:
+                layout.addLayout(row)
+                row = QHBoxLayout()
             b = QPushButton(title)
             b.clicked.connect(fn)
             row.addWidget(b)
@@ -82,9 +86,9 @@ class SkillEditor(QDialog):
         self.table.setRowCount(len(self.plan.steps))
         for i, step in enumerate(self.plan.steps):
             selector = step.args.get('selector', {})
-            target = selector.get('automation_id', '') or str(step.args.get('path', step.args.get('app_id', '')))
-            value = step.args.get('text', step.args.get('expected_state', step.args.get('timeout', '')))
-            for j, text in enumerate((LABELS.get(step.action, step.action), target, str(value))):
+            target = selector.get('automation_id', '') or selector.get('name', '') or str(step.args.get('path', step.args.get('app_id', '')))
+            value = step.args.get('text', step.args.get('expected_state', step.args.get('state', step.args.get('timeout', ''))))
+            for j, text in enumerate((LABELS.get(step.action, step.action), selector.get('app', ''), selector.get('window', ''), target, str(value))):
                 self.table.setItem(i, j, QTableWidgetItem(text))
         self.table.resizeColumnsToContents()
 
@@ -108,6 +112,34 @@ class SkillEditor(QDialog):
             self.plan.steps[i-1], self.plan.steps[i] = self.plan.steps[i], self.plan.steps[i-1]
             self.refresh()
             self.table.selectRow(i-1)
+
+    def down(self):
+        i = self.table.currentRow()
+        if 0 <= i < len(self.plan.steps) - 1:
+            self.plan.steps[i], self.plan.steps[i+1] = self.plan.steps[i+1], self.plan.steps[i]
+            self.refresh()
+            self.table.selectRow(i+1)
+
+    def add_window_step(self, action):
+        i = self.table.currentRow()
+        if i >= 0 and 'selector' in self.plan.steps[i].args:
+            args = {'selector': dict(self.plan.steps[i].args['selector'])}
+            if action in ('wait_for_window', 'wait_for_element'):
+                args['timeout'] = 10
+            self.plan.steps.insert(i+1, Step(action, args))
+            self.refresh()
+            self.table.selectRow(i+1)
+        else:
+            QMessageBox.information(self, 'Окно', 'Выберите шаг с селектором окна или элемента.')
+
+    def add_wait_window(self):
+        self.add_window_step('wait_for_window')
+
+    def add_wait_element(self):
+        self.add_window_step('wait_for_element')
+
+    def add_focus_window(self):
+        self.add_window_step('focus_window')
 
     def add_assert(self):
         i = self.table.currentRow()

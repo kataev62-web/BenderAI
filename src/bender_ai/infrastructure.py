@@ -33,6 +33,7 @@ class Task(QThread):
 
 class CaptureTask(QThread):
     count = Signal(int)
+    diagnostic = Signal(str)
     ready = Signal()
     failure = Signal(str)
 
@@ -43,9 +44,14 @@ class CaptureTask(QThread):
 
     def run(self):
         ready_sent = False
+        diagnostics_sent = 0
         try:
             while not self.stop_event.wait(.04):
                 self.capture.poll()
+                diagnostics = getattr(self.capture.recorder, "diagnostics", [])
+                for reason in diagnostics[diagnostics_sent:]:
+                    self.diagnostic.emit(reason)
+                diagnostics_sent = len(diagnostics)
                 if self.capture.ready:
                     if not ready_sent:
                         self.ready.emit()

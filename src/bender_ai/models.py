@@ -57,12 +57,14 @@ class Selector:
 SCHEMAS = {
     'open_app': ('app_id',), 'open_folder': ('path',), 'get_active_window': (),
     'list_folder': ('path',), 'create_folder': ('parent', 'name'),
-    'focus_window': ('selector',), 'uia_click': ('selector',),
+    'focus_window': ('selector',), 'wait_for_window': ('selector', 'timeout'),
+    'uia_select': ('selector',), 'uia_toggle': ('selector', 'state'), 'uia_expand': ('selector', 'state'),
+    'uia_click': ('selector',),
     'uia_set_text': ('selector', 'text'), 'wait_for_element': ('selector', 'timeout'),
     'assert_element': ('selector', 'expected_state'),
     'launch_approved_gradle_task': ('project_path', 'task'), 'list_skills': (), 'stop': (),
 }
-MUTATING = {'create_folder', 'uia_click', 'uia_set_text', 'focus_window', 'launch_approved_gradle_task'}
+MUTATING = {'create_folder', 'uia_click', 'uia_set_text', 'uia_select', 'uia_toggle', 'uia_expand', 'focus_window', 'launch_approved_gradle_task'}
 
 
 @dataclass
@@ -85,6 +87,10 @@ class Step:
                     raise ValidationError('Недопустимый текст')
             else:
                 string(value)
+        if self.action in ('uia_toggle', 'uia_expand'):
+            allowed = ('on', 'off') if self.action == 'uia_toggle' else ('expanded', 'collapsed')
+            if self.args['state'] not in allowed:
+                raise ValidationError('Неподдерживаемое состояние UIA')
         if self.action == 'create_folder':
             name = self.args['name']
             if name.split('.')[0].upper() in {'CON', 'PRN', 'AUX', 'NUL', *('COM'+str(i) for i in range(1,10)), *('LPT'+str(i) for i in range(1,10))} or name in ('.', '..') or any(c in name for c in '\\/:*?"<>|') or name.endswith((' ', '.')):

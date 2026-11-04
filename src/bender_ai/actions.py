@@ -60,8 +60,8 @@ class ActionRegistry:
             raise Denied('Режим наблюдателя запрещает управление')
         if 'selector' in args:
             selector = Selector.from_dict(args['selector'])
-            self.policy.window(selector.app, selector.window)
-            self.policy.app(selector.app, control=action in ('uia_click', 'uia_set_text', 'focus_window'))
+            self.policy.window(selector.app, selector.window, control=action in MUTATING)
+            self.policy.app(selector.app, control=action in MUTATING)
         if action == 'open_app' and args['app_id'] not in self.apps:
             raise Denied('Приложение отсутствует в белом списке')
         if action in ('open_folder', 'list_folder'):
@@ -161,11 +161,12 @@ class ActionRegistry:
         if self.ui is None:
             raise RuntimeError('UI Automation доступна только в Windows')
         selector = Selector.from_dict(p['selector'])
-        if a == 'wait_for_element':
+        if a in ('wait_for_element', 'wait_for_window'):
             end = time.monotonic() + p['timeout']
             while True:
                 cancel.check()
-                if self.ui.exists(selector):
+                found = self.ui.window_exists(selector) if a == 'wait_for_window' else self.ui.exists(selector)
+                if found:
                     return 'Элемент найден'
                 if time.monotonic() >= end:
                     raise TimeoutError('Элемент не появился')
@@ -180,6 +181,12 @@ class ActionRegistry:
             self.ui.click(selector)
         elif a == 'uia_set_text':
             self.ui.set_text(selector, p['text'])
+        elif a == 'uia_select':
+            self.ui.select(selector)
+        elif a == 'uia_toggle':
+            self.ui.toggle(selector, p['state'])
+        elif a == 'uia_expand':
+            self.ui.expand(selector, p['state'])
         else:
             raise ValidationError('Инструмент не реализован')
         cancel.check()

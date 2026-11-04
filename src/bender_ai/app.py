@@ -8,7 +8,7 @@ from PySide6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QTextBrowser, QLineEdit, QPushButton, QLabel, QListWidget, QSystemTrayIcon,
     QMenu, QMessageBox, QFileDialog, QInputDialog, QDialog, QFormLayout, QCheckBox,
-    QComboBox, QSpinBox, QDialogButtonBox, QPlainTextEdit)
+    QComboBox, QSpinBox, QDialogButtonBox, QPlainTextEdit, QListWidgetItem)
 from .actions import ActionRegistry, Executor, Cancellation
 from .brain import RuleBasedProvider, OllamaProvider, CloudProvider
 from .character import Character, CharacterPack
@@ -18,6 +18,34 @@ from .learning import Recorder
 from .models import Plan, ValidationError
 from .security import Policy, SecretVault, Denied
 from .storage import Store
+
+
+class RecordingWindowsDialog(QDialog):
+    def __init__(self, windows, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Бендер, учись — выберите окна')
+        self.resize(620, 430)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel('Выберите от 1 до 12 разрешённых окон. Переключайтесь между ними вручную.'))
+        self.windows = QListWidget()
+        for app, title in windows:
+            item = QListWidgetItem(app + ' • ' + title)
+            item.setData(Qt.ItemDataRole.UserRole, (app, title))
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            self.windows.addItem(item)
+        layout.addWidget(self.windows)
+        self.literal_text = QCheckBox('Сохранять несекретные значения текста (по умолчанию только параметры)')
+        layout.addWidget(self.literal_text)
+        layout.addWidget(QLabel('Пароли исключены. UIA-паттерны зависят от приложения. Неподдерживаемые действия показаны в диагностике.'))
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_windows(self):
+        return [self.windows.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.windows.count())
+                if self.windows.item(i).checkState() == Qt.CheckState.Checked]
 
 
 class MainWindow(QMainWindow):
@@ -102,7 +130,11 @@ class MainWindow(QMainWindow):
         for title, fn in [('Начать', self.learn), ('Пауза / продолжить', self.pause_recording), ('Стоп и редактировать', self.finish_recording), ('Отменить запись', self.cancel_recording)]:
             self.button(title, fn, row)
         layout.addLayout(row)
-        layout.addWidget(QLabel('Записываются только разрешённые Edit/ValuePattern и кнопки Invoke выбранного окна.\nПароли исключены. Текст по умолчанию становится параметром.\nПосле записи добавьте проверку результата в редакторе.'))
+        layout.addWidget(QLabel('Только выбранные окна: Invoke, Value, SelectionItem, Toggle, ExpandCollapse при поддержке UIA.\nПароли исключены. Текст по умолчанию становится параметром.\nЛимиты: 100 шагов, 5 минут. Неподдерживаемые события видны ниже. Проверьте результат в редакторе.'))
+        self.record_diagnostics = QPlainTextEdit()
+        self.record_diagnostics.setReadOnly(True)
+        self.record_diagnostics.setPlaceholderText('Диагностика записи: только безопасные причины, без значений полей.')
+        layout.addWidget(self.record_diagnostics)
         layout.addStretch()
         self.tabs.addTab(recording, 'Обучение')
         permissions = QWidget()
@@ -115,6 +147,7 @@ class MainWindow(QMainWindow):
         self.button('Добавить папку для чтения', lambda: self.add_folder(False), row)
         self.button('Добавить папку для записи', lambda: self.add_folder(True), row)
         self.button('Разрешить процесс', self.add_app, row)
+        self.button('Отозвать приложение', self.revoke_app, row)
         self.button('Сбросить разрешения', self.reset_permissions, row)
         gradle_row = QHBoxLayout()
         self.button('Разрешить проект и задачу Gradle', self.approve_gradle, gradle_row)
@@ -436,23 +469,48 @@ class MainWindow(QMainWindow):
     def add_app(self):
         if self.task is not None or self.recorder:
             return
-        name, ok = QInputDialog.getText(self, 'Разрешение UIA', 'Имя процесса (например notepad.exe). Браузеры и привилегированные окна не поддерживаются:')
+        if self.ui is None:
+            self.on_error('Выбор окон требует Windows UI Automation')
+            return
+        self.start_task(self.ui.candidates, self.choose_app_candidate)
+
+    def choose_app_candidate(self, candidates):
+        candidates = [c for c in candidates if c.get('app') and c.get('title') and c.get('executable')
+                      and c['title'] != self.windowTitle()]
+        if not candidates:
+            self.on_error('Нет доступных окон с проверяемым исполняемым файлом.')
+            return
+        labels = [c['app'] + ' • ' + c['title'] for c in candidates]
+        label, ok = QInputDialog.getItem(self, 'Разрешить окно', 'Выберите точное окно:', labels, 0, False)
         if not ok:
             return
-        name = name.strip().casefold()
-        # MVP is intentionally constrained to tested classes of local applications.
-        supported = {'notepad.exe', 'bendertraining.exe', 'python.exe', 'pythonw.exe', 'benderai.exe'}
-        if name not in supported:
-            self.on_error('В MVP разрешены только Блокнот и процесс тестовой формы. Универсальное управление приложениями не заявлено.')
+        candidate = candidates[labels.index(label)]
+        mode, ok = QInputDialog.getItem(self, 'Вид разрешения', 'Разрешить:',
+                                       ['Только чтение', 'Чтение и управление'], 0, False)
+        if not ok:
             return
-        if name in {'python.exe', 'pythonw.exe', 'bendertraining.exe', 'benderai.exe'}:
-            self.policy.window_scopes[name] = ['BENDER AI Training']
-        control = self.confirm('Управление приложением?', 'Разрешить ввод и нажатия кнопок? «Нет» выдаёт только право чтения. Проверяйте заголовок выбранного окна; не используйте приложения с чувствительными данными.')
-        if name not in self.policy.read_apps:
-            self.policy.read_apps.append(name)
-        if control and name not in self.policy.ui_apps:
-            self.policy.ui_apps.append(name)
-        self.persist_policy()
+        control = mode == 'Чтение и управление'
+        preview = (candidate['app'] + '\nОкно: ' + candidate['title'] + '\nФайл: ' + candidate['executable']
+                   + '\nПрава: ' + ('чтение и управление' if control else 'только чтение')
+                   + '\nНе выбирайте окна с чувствительными данными. Поддержка UIA зависит от приложения.')
+        if not self.confirm('Выдать выбранные права?', preview):
+            return
+        try:
+            self.policy.grant_app(candidate['app'], candidate['title'], candidate['executable'], control=control)
+            self.persist_policy()
+        except (ValueError, Denied) as exc:
+            self.on_error(str(exc))
+
+    def revoke_app(self):
+        if self.task is not None or self.recorder:
+            return
+        apps = sorted(set(self.policy.read_apps + self.policy.ui_apps))
+        if not apps:
+            return
+        app, ok = QInputDialog.getItem(self, 'Отозвать приложение', 'Процесс и все его разрешённые окна:', apps, 0, False)
+        if ok and self.confirm('Отозвать?', app):
+            self.policy.revoke_app(app)
+            self.persist_policy()
 
     def reset_permissions(self):
         if self.task is not None or self.recorder:
@@ -527,10 +585,7 @@ class MainWindow(QMainWindow):
             command = [sys.executable, '-m', 'bender_ai.training_form']
             process = Path(sys.executable).name.casefold()
         subprocess.Popen(command, shell=False)
-        self.policy.window_scopes[process] = ['BENDER AI Training']
-        for collection in (self.policy.read_apps, self.policy.ui_apps):
-            if process not in collection:
-                collection.append(process)
+        self.policy.grant_app(process, 'BENDER AI Training', command[0], control=True)
         self.persist_policy()
         self.message('Обучение', 'Форма открывается. Нажмите «Бендер, учись» и выберите BENDER AI Training.')
 
@@ -544,28 +599,53 @@ class MainWindow(QMainWindow):
         self.start_task(self.ui.windows, self.choose_recording_window)
 
     def choose_recording_window(self, windows):
-        windows = [(a,w) for a,w in windows if a.casefold() in {x.casefold() for x in self.policy.ui_apps} and w != self.windowTitle()]
+        approved = []
+        for app, title in windows:
+            if title == self.windowTitle():
+                continue
+            try:
+                self.policy.app(app, control=True)
+                self.policy.window(app, title, control=True)
+            except Denied:
+                continue
+            approved.append((app, title))
+        windows = approved
         if not windows:
             self.on_error('Нет разрешённых окон. Откройте тестовую форму или выдайте разрешение процессу.')
             return
-        labels = [a + ' • ' + w for a,w in windows]
-        label, ok = QInputDialog.getItem(self, 'Бендер, учись', 'Записывать только выбранное окно:', labels, 0, False)
-        if not ok:
+        dialog = RecordingWindowsDialog(windows, self)
+        if not dialog.exec():
             return
-        app, title = windows[labels.index(label)]
-        literals = self.confirm('Записывать значения текста?', '«Да»: сохранять введённые несекретные значения. «Нет»: сохранять только параметры без текста (рекомендуется). Парольные поля всегда исключены.')
-        self.recorder = Recorder(app, title, literal_text=literals)
+        selected = dialog.selected_windows()
+        if not 1 <= len(selected) <= 12:
+            self.on_error('Выберите от 1 до 12 окон.')
+            return
+        if not self.confirm('Начать запись выбранных окон?', '\n'.join(a + ' • ' + w for a, w in selected)):
+            return
+        self.recorder = Recorder(windows=selected, literal_text=dialog.literal_text.isChecked())
         self.recorder.start()
+        self.record_diagnostics.clear()
         from .windows import WindowsCapture
         self.capture_task = CaptureTask(WindowsCapture(self.ui, self.recorder), self)
-        self.capture_task.count.connect(lambda n: self.record_label.setText(f'● ЗАПИСЬ ДЕЙСТВИЙ ВКЛЮЧЕНА • {title} • шагов: {n}' if not self.recorder.paused else f'ПАУЗА • {n} шагов') if self.recorder else None)
-        self.capture_task.ready.connect(lambda: self.record_label.setText('● ЗАПИСЬ ДЕЙСТВИЙ ВКЛЮЧЕНА • ' + title))
+        self.capture_task.count.connect(self.recording_count)
+        self.capture_task.ready.connect(lambda: self.recording_count(0))
+        self.capture_task.diagnostic.connect(self.recording_diagnostic)
         self.capture_task.failure.connect(self.recording_failed)
         self.capture_task.finished.connect(lambda: self.quit_app() if self.shutting_down else None)
         self.capture_task.start()
         self.tabs.setCurrentIndex(2)
         self.record_label.setStyleSheet('color:#c93046;font-weight:bold;font-size:16px')
         self.record_label.setText('Подключение UIA… дождитесь красного индикатора записи.')
+
+    def recording_count(self, count):
+        if self.recorder:
+            state = 'ПАУЗА' if self.recorder.paused else '● ЗАПИСЬ ДЕЙСТВИЙ ВКЛЮЧЕНА'
+            windows = getattr(self.recorder, 'windows', ())
+            self.record_label.setText(f'{state} • окон: {len(windows)} • шагов: {count}')
+
+    def recording_diagnostic(self, reason):
+        # Recorder supplies a closed set of safe reason codes, never field text.
+        self.record_diagnostics.appendPlainText(str(reason))
 
     def recording_failed(self, message):
         self.record_label.setText('ЗАПИСЬ НА ПАУЗЕ • ошибка UIA. Проверьте черновик; запись может быть неполной.')
