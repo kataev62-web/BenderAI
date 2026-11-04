@@ -53,7 +53,8 @@ def native_windows():
     bridge = None
     try:
         for command, title in zip([*commands, commands[0], commands[0]], titles):
-            processes.append(subprocess.Popen([*command, '--title', title]))
+            from windows_fixture_process import spawn_fixture
+            processes.append(spawn_fixture([*command, '--title', title]))
             eventually(lambda: user.FindWindowW(None, title))
             handles.append(user.FindWindowW(None, title))
         pids = []

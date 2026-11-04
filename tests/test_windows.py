@@ -26,7 +26,8 @@ def eventually(predicate, timeout=12):
 def test_native_form_record_save_restart_replay_and_moved_button(tmp_path):
     from bender_ai.isolation import WindowsBridge
     from bender_ai.windows import WindowsCapture
-    process = subprocess.Popen([sys.executable,'-m','bender_ai.training_form'])
+    from windows_fixture_process import spawn_fixture
+    process = spawn_fixture([sys.executable,'-m','bender_ai.training_form'])
     app = Path(sys.executable).name.casefold()
     title = 'BENDER AI Training'
     policy = Policy(read_apps=[app],ui_apps=[app],window_scopes={app:[title]})

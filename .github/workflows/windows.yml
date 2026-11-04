@@ -43,6 +43,13 @@ jobs:
           except Denied as exc:
               print('::notice title=Native integrity::' + str(exc))
           '@ | python
+      - name: Native source UIA preflight with non-elevated fixtures
+        env:
+          BENDER_WINDOWS_INTEGRATION: '1'
+        run: python -m pytest -m windows -v --junitxml=build/native-preflight.xml
+      - name: Publish source UIA preflight diagnostics
+        if: always()
+        run: python scripts/ci_summary.py build/native-preflight.xml
       - name: Package and smoke test frozen executable
         shell: pwsh
         run: ./scripts/build_windows.ps1
@@ -82,4 +89,5 @@ jobs:
           path: |
             test-results.xml
             build/native-results.xml
+            build/native-preflight.xml
             build/packaged-smoke.json
