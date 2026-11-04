@@ -42,3 +42,7 @@ if __name__ == '__main__':
             stream.write(result)
     else:
         print(result)
+    if os.environ.get('GITHUB_ACTIONS') == 'true' and re.search(r'[1-9][0-9]* failed', result):
+        # Official Actions annotations remain visible even when log viewing needs sign-in.
+        escaped = result[:16000].replace('%','%25').replace('\r','%0D').replace('\n','%0A')
+        print('::error title=Windows test diagnostics::' + escaped)

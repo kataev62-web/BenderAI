@@ -32,12 +32,12 @@ jobs:
       - name: Package and smoke test frozen executable
         shell: pwsh
         run: ./scripts/build_windows.ps1
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: BenderAI-windows-x64
           path: dist/BenderAI-windows-x64.zip
           if-no-files-found: error
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: test-results
