@@ -168,3 +168,10 @@ def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, 
     for _,kind,selector,value,timestamp in events:
         recorder.capture(kind,Selector.from_dict(selector),value,timestamp=timestamp)
     assert recorder.steps == []
+
+
+@pytest.mark.parametrize('unknown', [None, '', 0.5])
+def test_non_boolean_password_status_is_unknown_and_rejected(unknown):
+    raw = SimpleNamespace(CurrentIsPassword=unknown)
+    assert not windows.safe_raw_element(raw)
+    assert not windows.safe_element(SimpleNamespace(element_info=SimpleNamespace(element=raw)))
