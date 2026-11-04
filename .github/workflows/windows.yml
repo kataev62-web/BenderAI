@@ -12,8 +12,8 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           architecture: x64
@@ -26,14 +26,18 @@ jobs:
           python -m pip check
       - name: Unit and portable integration tests
         run: python -m pytest -m "not windows" -q --junitxml=test-results.xml
+      - name: Publish test diagnostics
+        if: always()
+        run: python scripts/ci_summary.py test-results.xml
       - name: Package and smoke test frozen executable
         shell: pwsh
         run: ./scripts/build_windows.ps1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: BenderAI-windows-x64
           path: dist/BenderAI-windows-x64.zip
-      - uses: actions/upload-artifact@v4
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: test-results
