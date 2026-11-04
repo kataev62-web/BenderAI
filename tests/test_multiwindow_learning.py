@@ -147,3 +147,11 @@ def test_wait_for_window_timeout_stops_sequence_and_stop_interrupts_wait(tmp_pat
     t.start();cancel.event.set();t.join(2)
     assert not t.is_alive() and out[0].status=='cancelled' and not ui.calls
     store.close()
+
+
+def test_expanding_legacy_exact_grant_preserves_existing_control_without_widening(tmp_path):
+    p=Policy(read_apps=['alpha.exe'],ui_apps=['alpha.exe'],window_scopes={'alpha.exe':['Existing']})
+    p.grant_app('alpha.exe','Read only',control=False)
+    p.window('alpha.exe','Existing',control=True)
+    with pytest.raises(Denied):p.window('alpha.exe','Read only',control=True)
+    assert p.window_scopes['alpha.exe']==['Existing','Read only']
