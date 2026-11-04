@@ -62,7 +62,7 @@ class IsolatedChannel:
 def windows_service(connection):
     from .windows import WindowsUIA, WindowsDesktop
     from .models import Selector
-    methods = {'ui': {'click', 'set_text', 'exists', 'assert_state', 'focus', 'windows', 'snapshot', 'clicked_selector'},
+    methods = {'ui': {'click', 'set_text', 'exists', 'assert_state', 'focus', 'windows', 'snapshot', 'select', 'toggle', 'expand', 'window_exists', 'candidates'},
                'desktop': {'open_app', 'open_folder', 'active'}}
     while True:
         try:

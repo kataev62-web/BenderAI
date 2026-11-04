@@ -6,7 +6,7 @@ import sys
 TITLE = 'BENDER AI Training'
 
 
-def main():
+def main(title=TITLE):
     if sys.platform != 'win32':
         raise SystemExit('Тестовая UIA-форма требует Windows')
     user = ctypes.WinDLL('user32', use_last_error=True)
@@ -56,7 +56,7 @@ def main():
     wc = WNDCLASS(0, proc, 0, 0, instance, None, None, 6, None, 'BenderTrainingFixture')
     if not user.RegisterClassW(ctypes.byref(wc)):
         raise ctypes.WinError(ctypes.get_last_error())
-    hwnd = user.CreateWindowExW(0, wc.lpszClassName, TITLE, 0x00CF0000, 100, 100, 560, 330, None, None, instance, None)
+    hwnd = user.CreateWindowExW(0, wc.lpszClassName, title, 0x00CF0000, 100, 100, 560, 440, None, None, instance, None)
     if not hwnd:
         raise ctypes.WinError(ctypes.get_last_error())
     def control(cls, text, ident, x, y, w, h, style=0):
@@ -68,6 +68,7 @@ def main():
     submit = control('BUTTON', 'Greet', 1002, 30, 150, 180, 35)
     control('BUTTON', 'Move button', 1005, 30, 195, 180, 30)
     status = control('STATIC', 'Ready', 1003, 30, 235, 470, 30)
+    control('BUTTON', 'Enable notifications', 1007, 30, 275, 230, 30, 0x00000003)
     user.ShowWindow(hwnd, 5)
     message = wintypes.MSG()
     while user.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
@@ -76,4 +77,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--title', default=TITLE)
+    main(parser.parse_args().title)

@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 from .models import Selector
-from .security import Denied
+from .security import Denied, ensure_uia_app
 
 
 def require_windows():
@@ -81,6 +81,9 @@ class WindowsDesktop:
         hwnd = win32gui.GetForegroundWindow()
         _, pid = win32process.GetWindowThreadProcessId(hwnd)
         name = process_name(pid)
+        ensure_uia_app(name)
+        policy.identity(name, process_path(pid))
+        check_process_access(pid)
         policy.app(name)
         title = win32gui.GetWindowText(hwnd)
         policy.window(name, title)
@@ -96,7 +99,7 @@ class WindowsDesktop:
         return {'process': name, 'title': title, 'elements': elements}
 
 
-def process_name(pid):
+def process_path(pid):
     require_windows()
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -113,9 +116,58 @@ def process_name(pid):
         length = wintypes.DWORD(len(buffer))
         if not kernel.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(length)):
             raise ctypes.WinError(ctypes.get_last_error())
-        return Path(buffer.value).name
+        return buffer.value
     finally:
         kernel.CloseHandle(handle)
+
+
+def process_name(pid):
+    return process_path(pid).replace('\\', '/').rsplit('/', 1)[-1]
+
+
+def safe_raw_element(element):
+    try:
+        return not bool(element.CurrentIsPassword)
+    except Exception:
+        return False
+
+
+def _belongs_to_root(api, sender, root):
+    """PID is insufficient: another window of that process is out of scope."""
+    for _ in range(64):
+        if not sender:
+            return False
+        if api.iuia.CompareElements(sender, root):
+            return True
+        sender = api.iuia.ControlViewWalker.GetParentElement(sender)
+    return False
+
+
+def check_process_access(pid):
+    """Do not automate elevated/protected targets or bypass their security boundary."""
+    require_windows()
+    import win32api
+    import win32security
+    process = token = None
+    try:
+        process = win32api.OpenProcess(0x1000, False, pid)
+        token = win32security.OpenProcessToken(process, 0x0008)
+        if win32security.GetTokenInformation(token, win32security.TokenElevation):
+            raise Denied('Повышенные приложения исключены')
+    except Denied:
+        raise
+    except Exception:
+        raise Denied('Не удалось проверить защиту приложения') from None
+    finally:
+        if token is not None:
+            token.Close()
+        if process is not None:
+            process.Close()
+
+
+def deny_dangerous_name(name):
+    if any(token in name.casefold() for token in ('delete', 'remove', 'send', 'pay', 'purchase', 'buy', 'удал', 'отправ', 'оплат', 'купить')):
+        raise Denied('Удаление, отправка и финансовые действия запрещены')
 
 
 def check_private(title):
@@ -137,6 +189,7 @@ class WindowsUIA:
         self.policy = policy
 
     def _window(self, selector):
+        ensure_uia_app(selector.app)
         from pywinauto import Desktop
         self.policy.app(selector.app)
         check_private(selector.window)
@@ -144,12 +197,16 @@ class WindowsUIA:
         matches = []
         for w in Desktop(backend='uia').windows(title=selector.window):
             try:
-                if process_name(w.process_id()).casefold() == selector.app.casefold():
+                if process_name(w.process_id()).casefold() == selector.app.casefold() and w.window_text() == selector.window:
+                    self.policy.identity(selector.app, process_path(w.process_id()))
+                    check_process_access(w.process_id())
                     matches.append(w)
             except OSError:
                 continue
+        if not matches:
+            raise Denied('Окно отсутствует')
         if len(matches) != 1:
-            raise Denied('Окно отсутствует или найдено несколько совпадений')
+            raise Denied('Найдено несколько совпадений окна')
         return matches[0]
 
     def _find(self, selector):
@@ -179,17 +236,17 @@ class WindowsUIA:
 
     def click(self, selector):
         self.policy.app(selector.app, control=True)
+        self.policy.window(selector.app, selector.window, control=True)
         with com_thread():
             element = self._find(selector)
             if selector.control_type != 'Button' or not element.is_enabled():
                 raise Denied('Поддерживаются только доступные кнопки Invoke')
-            name = element.element_info.name.casefold()
-            if any(token in name for token in ('delete', 'remove', 'send', 'pay', 'удал', 'отправ', 'оплат', 'купить')):
-                raise Denied('Удаление, отправка и финансовые действия запрещены')
+            deny_dangerous_name(element.element_info.name)
             element.iface_invoke.Invoke()
 
     def set_text(self, selector, text):
         self.policy.app(selector.app, control=True)
+        self.policy.window(selector.app, selector.window, control=True)
         with com_thread():
             element = self._find(selector)
             if selector.control_type != 'Edit' or not element.is_enabled():
@@ -216,8 +273,99 @@ class WindowsUIA:
 
     def focus(self, selector):
         self.policy.app(selector.app, control=True)
+        self.policy.window(selector.app, selector.window, control=True)
         with com_thread():
-            self._window(selector).set_focus()
+            import win32gui
+            window = self._window(selector)
+            window.set_focus()
+            if win32gui.GetForegroundWindow() != window.handle:
+                raise Denied('Windows не подтвердила переключение окна')
+
+    def window_exists(self, selector):
+        # Policy failures must remain failures; only absence can be waited for.
+        self.policy.app(selector.app)
+        self.policy.window(selector.app, selector.window)
+        check_private(selector.window)
+        with com_thread():
+            try:
+                self._window(selector)
+                return True
+            except Denied as exc:
+                if str(exc) == 'Окно отсутствует':
+                    return False
+                raise
+
+    def select(self, selector):
+        self.policy.app(selector.app, control=True)
+        self.policy.window(selector.app, selector.window, control=True)
+        with com_thread():
+            element = self._find(selector)
+            if not element.is_enabled():
+                raise Denied('Элемент недоступен')
+            deny_dangerous_name(element.element_info.name)
+            element.iface_selection_item.Select()
+            if not element.iface_selection_item.CurrentIsSelected:
+                raise RuntimeError('UIA не подтвердила выбор')
+
+    def toggle(self, selector, state):
+        if state not in ('on', 'off'):
+            raise Denied('Недопустимое состояние переключателя')
+        self.policy.app(selector.app, control=True)
+        self.policy.window(selector.app, selector.window, control=True)
+        with com_thread():
+            element = self._find(selector)
+            if not element.is_enabled():
+                raise Denied('Элемент недоступен')
+            deny_dangerous_name(element.element_info.name)
+            pattern = element.iface_toggle
+            expected = int(state == 'on')
+            # UIA supports a possible third state; never loop without a bound.
+            for _ in range(3):
+                if pattern.CurrentToggleState == expected:
+                    return
+                pattern.Toggle()
+            if pattern.CurrentToggleState != expected:
+                raise RuntimeError('UIA не подтвердила переключатель')
+
+    def expand(self, selector, state):
+        if state not in ('expanded', 'collapsed'):
+            raise Denied('Недопустимое состояние раскрытия')
+        self.policy.app(selector.app, control=True)
+        self.policy.window(selector.app, selector.window, control=True)
+        with com_thread():
+            element = self._find(selector)
+            if not element.is_enabled():
+                raise Denied('Элемент недоступен')
+            deny_dangerous_name(element.element_info.name)
+            pattern = element.iface_expand_collapse
+            expected = int(state == 'expanded')
+            if pattern.CurrentExpandCollapseState != expected:
+                (pattern.Expand if expected else pattern.Collapse)()
+            if pattern.CurrentExpandCollapseState != expected:
+                raise RuntimeError('UIA не подтвердила раскрытие')
+
+    def candidates(self):
+        # Native top-level metadata only: no UIA tree access before approval.
+        require_windows()
+        import win32gui
+        import win32process
+        result = []
+        def visit(hwnd, unused):
+            try:
+                title = win32gui.GetWindowText(hwnd)
+                if not title or not win32gui.IsWindowVisible(hwnd):
+                    return
+                check_private(title)
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                executable = process_path(pid)
+                app = process_name(pid)
+                ensure_uia_app(app)
+                check_process_access(pid)
+                result.append({'app': app, 'title': title, 'executable': executable})
+            except (Denied, OSError):
+                return
+        win32gui.EnumWindows(visit, None)
+        return result[:300]
 
     def windows(self):
         with com_thread():
@@ -226,7 +374,9 @@ class WindowsUIA:
             for window in Desktop(backend='uia').windows():
                 try:
                     app = process_name(window.process_id())
+                    ensure_uia_app(app)
                     self.policy.app(app)
+                    self.policy.identity(app, process_path(window.process_id()))
                     title = window.window_text()
                     self.policy.window(app, title)
                     check_private(title)
@@ -256,84 +406,192 @@ class WindowsUIA:
                 result.append((selector, value))
             return result
 
-    def clicked_selector(self, app, title):
-        with com_thread():
-            import win32gui
-            from pywinauto import Desktop
-            point = win32gui.GetCursorPos()
-            element = Desktop(backend='uia').from_point(*point)
-            info = element.element_info
-            if info.control_type != 'Button' or not info.automation_id or not safe_element(element):
-                return None
-            root = element.top_level_parent()
-            if root.window_text() != title or process_name(root.process_id()).casefold() != app.casefold():
-                return None
-            return Selector(app, title, info.automation_id, info.control_type)
+
+def _inventory_reason(element):
+    if not safe_element(element):
+        return 'password_or_unknown'
+    info = element.element_info
+    if not info.automation_id:
+        return 'unstable_selector'
+    patterns = {'Button': ('iface_invoke',), 'Edit': ('iface_value',),
+                'CheckBox': ('iface_toggle',), 'RadioButton': ('iface_selection_item',),
+                'ListItem': ('iface_selection_item',),
+                'TreeItem': ('iface_selection_item', 'iface_expand_collapse'),
+                'ComboBox': ('iface_expand_collapse',), 'Text': ()}
+    if info.control_type not in patterns:
+        return 'unsupported_control'
+    for name in patterns[info.control_type]:
+        try:
+            if getattr(element, name) is None:
+                return 'unsupported_pattern'
+        except Exception:
+            return 'unsupported_pattern'
+    return None
 
 
-def _record_events(connection, app, title, policy_data, literal_text):
-    """Dedicated UIA event process. No keyboard hooks and no cursor sampling."""
+def _record_value(kind, new_value, literal_text):
+    """Default text capture must never stringify or send a provider's value."""
+    if kind == 'set_text':
+        return str(new_value) if literal_text else ''
+    if kind in ('toggle', 'expand'):
+        if new_value not in (0, 1):
+            raise Denied('unsupported_state')
+        return ({0: 'off', 1: 'on'} if kind == 'toggle' else
+                {0: 'collapsed', 1: 'expanded'})[new_value]
+    return ''
+
+
+def _record_events(connection, windows, policy_data, literal_text):
+    """One bounded child, selected-root subscriptions, no global input hooks."""
     import threading
-    # pythoncom initializes the importing main thread; choose MTA before that import.
     sys.coinit_flags = 0
     initialized = False
+    subscriptions = []
+    lock = threading.RLock()
+    failed = False
+    active = None
     try:
         import pythoncom
         pythoncom.CoInitializeEx(pythoncom.COINIT_MULTITHREADED)
         initialized = True
         import comtypes
+        import win32gui
         from pywinauto.uia_defines import IUIA
         from .security import Policy
         policy = Policy(**policy_data)
-        adapter = WindowsUIA(policy)
-        root = adapter._window(Selector(app, title, '__window__', 'Window'))
-        api = IUIA()
-        write_lock = threading.Lock()
-        def emit(kind, sender, new_value=''):
-            try:
-                if sender.CurrentIsPassword or sender.CurrentProcessId != root.process_id():
+        adapter, api = WindowsUIA(policy), IUIA()
+        roots = []
+        for app, title in windows:
+            ensure_uia_app(app)
+            policy.app(app, control=True)
+            policy.window(app, title, control=True)
+            root = adapter._window(Selector(app, title, '__window__', 'Window'))
+            roots.append((app, title, root))
+        def validate(app, title, root):
+            policy.app(app, control=True)
+            policy.window(app, title, control=True)
+            check_private(root.window_text())
+            if not win32gui.IsWindow(root.handle) or root.window_text() != title:
+                raise Denied('Записываемое окно изменилось')
+            policy.identity(app, process_path(root.process_id()))
+            check_process_access(root.process_id())
+        def send_focus(app, title, root, timestamp):
+            nonlocal active
+            if active != root.handle:
+                selector = Selector(app, title, '__window__', 'Window')
+                connection.send(('event', 'focus', selector.to_dict(), '', timestamp))
+                active = root.handle
+        def diagnostic(reason):
+            connection.send(('diagnostic', reason))
+        def emit(kind, sender, new_value='', timestamp=None):
+            nonlocal failed
+            # Preserve callback arrival time across lock contention and slow COM reads.
+            if timestamp is None:
+                timestamp = time.perf_counter()
+            with lock:
+                if failed:
                     return
-                if root.window_text() != title:
-                    raise Denied('Заголовок записываемого окна изменился')
-                control_type = {50000: 'Button', 50004: 'Edit'}.get(sender.CurrentControlType)
-                if control_type != ('Button' if kind == 'click' else 'Edit'):
-                    return
-                automation_id = sender.CurrentAutomationId
-                if not automation_id:
-                    return
-                selector = Selector(app, title, automation_id, control_type)
-                value = str(new_value) if literal_text and kind == 'set_text' else ''
-                with write_lock:
-                    connection.send(('event', kind, selector.to_dict(), value, time.perf_counter()))
-            except Exception:
-                # Fail visibly instead of silently claiming a complete demonstration.
-                with write_lock:
-                    connection.send(('error', 'UIA не смогла прочитать событие. Проверьте черновик.'))
-        class InvokeHandler(comtypes.COMObject):
+                try:
+                    selected = next(((a,t,r) for a,t,r in roots if _belongs_to_root(api, sender, r.element_info.element)), None)
+                    if selected is None:
+                        return
+                    app, title, root = selected
+                    validate(app, title, root)
+                    if not safe_raw_element(sender):
+                        diagnostic('password_or_unknown')
+                        return
+                    if win32gui.GetForegroundWindow() != root.handle:
+                        return
+                    control_type = {50000:'Button',50004:'Edit',50002:'CheckBox',50003:'ComboBox',50007:'ListItem',50013:'RadioButton',50024:'TreeItem'}.get(sender.CurrentControlType)
+                    automation_id = sender.CurrentAutomationId
+                    if not automation_id or control_type is None:
+                        diagnostic('unsupported_control')
+                        return
+                    if kind in ('click', 'select', 'toggle', 'expand'):
+                        try:
+                            deny_dangerous_name(sender.CurrentName)
+                        except Denied:
+                            diagnostic('dangerous_action')
+                            return
+                    if kind == 'click':
+                        if control_type != 'Button':
+                            diagnostic('unsupported_control')
+                            return
+                    if kind == 'set_text' and control_type != 'Edit':
+                        diagnostic('unsupported_control')
+                        return
+                    selector = Selector(app, title, automation_id, control_type)
+                    # Replay must identify precisely the same element, including duplicate IDs.
+                    resolved = adapter._find(selector)
+                    if not api.iuia.CompareElements(sender, resolved.element_info.element):
+                        diagnostic('ambiguous_selector')
+                        return
+                    try:
+                        value = _record_value(kind, new_value, literal_text)
+                    except Denied:
+                        diagnostic('unsupported_state')
+                        return
+                    send_focus(app, title, root, timestamp)
+                    connection.send(('event',kind,selector.to_dict(),value,timestamp))
+                except Exception:
+                    failed = True
+                    connection.send(('error','UIA не смогла проверить событие. Запись остановлена.'))
+        class EventHandler(comtypes.COMObject):
             _com_interfaces_ = [api.UIA_dll.IUIAutomationEventHandler]
             def HandleAutomationEvent(self, sender, event_id):
-                emit('click', sender)
+                timestamp = time.perf_counter()
+                emit('click' if event_id == 20009 else 'select', sender, timestamp=timestamp)
                 return 0
         class PropertyHandler(comtypes.COMObject):
             _com_interfaces_ = [api.UIA_dll.IUIAutomationPropertyChangedEventHandler]
             def HandlePropertyChangedEvent(self, sender, property_id, new_value):
-                if property_id == 30045:
-                    emit('set_text', sender, new_value)
+                timestamp = time.perf_counter()
+                kind = {30045:'set_text',30086:'toggle',30070:'expand'}.get(property_id)
+                if kind:
+                    emit(kind,sender,new_value,timestamp=timestamp)
                 return 0
-        invoke, value = InvokeHandler(), PropertyHandler()
-        properties = (ctypes.c_int * 1)(30045)
-        element = root.element_info.element
-        api.iuia.AddAutomationEventHandler(20009, element, api.tree_scope['subtree'], None, invoke)
-        api.iuia.AddPropertyChangedEventHandlerNativeArray(element, api.tree_scope['subtree'], None, value, properties, 1)
+        events, properties_handler = EventHandler(), PropertyHandler()
+        properties = (ctypes.c_int * 3)(30045,30086,30070)
+        for app,title,root in roots:
+            validate(app,title,root)
+            # Inventory only selected approved trees, with fixed diagnostics and no text.
+            for item in root.descendants()[:1000]:
+                reason = _inventory_reason(item)
+                if reason:
+                    diagnostic(reason)
+            element = root.element_info.element
+            for event_id in (20009,20012):
+                api.iuia.AddAutomationEventHandler(event_id,element,api.tree_scope['subtree'],None,events)
+                subscriptions.append(('event',event_id,element))
+            api.iuia.AddPropertyChangedEventHandlerNativeArray(element,api.tree_scope['subtree'],None,properties_handler,properties,3)
+            subscriptions.append(('property',None,element))
         connection.send(('ready',))
         while not connection.poll(.05):
-            pass  # callbacks are delivered on COM's MTA thread pool
-        connection.recv()
-        api.iuia.RemoveAutomationEventHandler(20009, element, invoke)
-        api.iuia.RemovePropertyChangedEventHandler(element, value)
+            timestamp = time.perf_counter()
+            with lock:
+                if failed:
+                    break
+                foreground = win32gui.GetForegroundWindow()
+                for app,title,root in roots:
+                    validate(app,title,root)
+                    if foreground == root.handle:
+                        send_focus(app,title,root,timestamp)
+                if not any(root.handle == foreground for _,_,root in roots):
+                    active = None
     except Exception as exc:
-        connection.send(('error', 'Запись UIA недоступна: ' + type(exc).__name__))
+        try:
+            connection.send(('error','Запись UIA недоступна: '+type(exc).__name__))
+        except (OSError,EOFError):
+            pass
     finally:
+        for kind,event_id,element in subscriptions:
+            try:
+                if kind == 'event':
+                    api.iuia.RemoveAutomationEventHandler(event_id,element,events)
+                else:
+                    api.iuia.RemovePropertyChangedEventHandler(element,properties_handler)
+            except Exception:
+                pass
         if initialized:
             pythoncom.CoUninitialize()
         connection.close()
@@ -353,8 +611,8 @@ class WindowsCapture:
         parent, child = context.Pipe()
         self.connection = parent
         policy = self.ui.bridge.policy
-        self.process = context.Process(target=_record_events, args=(child, self.recorder.app,
-            self.recorder.window, policy.to_dict(), self.recorder.literal_text), daemon=True)
+        self.process = context.Process(target=_record_events, args=(child, self.recorder.windows,
+            policy.to_dict(), self.recorder.literal_text), daemon=True)
         self.process.start()
         child.close()
 
@@ -379,6 +637,8 @@ class WindowsCapture:
                 self.ready = True
             elif event[0] == 'error':
                 raise RuntimeError(event[1])
+            elif event[0] == 'diagnostic':
+                self.recorder.report(event[1])
             elif event[0] == 'event':
                 self.recorder.capture(event[1], Selector.from_dict(event[2]), event[3], timestamp=event[4])
     def close(self):

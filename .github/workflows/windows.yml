@@ -34,6 +34,30 @@ jobs:
       - name: Package and smoke test frozen executable
         shell: pwsh
         run: ./scripts/build_windows.ps1
+      - name: Native UIA across distinct packaged fixture applications
+        env:
+          BENDER_WINDOWS_INTEGRATION: '1'
+          BENDER_TRAINING_EXE: ${{ github.workspace }}\dist\BenderAI\BenderTraining.exe
+          BENDER_TRAINING_PEER_EXE: ${{ github.workspace }}\dist\BenderAI\BenderTrainingPeer.exe
+        run: python -m pytest -m windows -v --junitxml=build/native-results.xml
+      - name: Publish native UIA diagnostics
+        if: always()
+        run: python scripts/ci_summary.py build/native-results.xml
+      - name: Require native tests and attach evidence to package
+        shell: pwsh
+        run: |
+          [xml]$native = Get-Content build/native-results.xml -Raw -Encoding UTF8
+          $suite = $native.testsuites.testsuite
+          if ([int]$suite.tests -lt 3 -or [int]$suite.skipped -ne 0 -or [int]$suite.failures -ne 0 -or [int]$suite.errors -ne 0) {
+            throw 'Native tests must execute with zero skips, failures and errors'
+          }
+          Copy-Item build/native-results.xml dist/BenderAI/native-results.xml
+          $info = Get-Content dist/BenderAI/BUILD-INFO.json -Raw | ConvertFrom-Json
+          $info | Add-Member -NotePropertyName native_uia_tests -NotePropertyValue ([int]$suite.tests) -Force
+          $info | Add-Member -NotePropertyName native_uia_skipped -NotePropertyValue 0 -Force
+          $info | Add-Member -NotePropertyName native_fixture_mode -NotePropertyValue 'two-distinct-packaged-executables' -Force
+          $info | ConvertTo-Json | Set-Content dist/BenderAI/BUILD-INFO.json -Encoding UTF8
+          Compress-Archive -Path dist/BenderAI/* -DestinationPath dist/BenderAI-windows-x64.zip -Force
       - uses: actions/upload-artifact@v6
         with:
           name: BenderAI-windows-x64
@@ -43,4 +67,7 @@ jobs:
         if: always()
         with:
           name: test-results
-          path: test-results.xml
+          path: |
+            test-results.xml
+            build/native-results.xml
+            build/packaged-smoke.json

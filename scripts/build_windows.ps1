@@ -15,6 +15,9 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # Self-contained fixture avoids overwriting the application runtime libraries.
 Copy-Item build/training-dist/BenderTraining.exe dist/BenderAI/
+& $Python -m PyInstaller --noconfirm --clean --windowed --onefile --name BenderTrainingPeer --distpath build/training-dist scripts/training_entry.py
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Copy-Item build/training-dist/BenderTrainingPeer.exe dist/BenderAI/
 Copy-Item LICENSE-THIRD-PARTY.md dist/BenderAI/
 & $Python scripts/collect_licenses.py dist/BenderAI/licenses
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
