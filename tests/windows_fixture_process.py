@@ -1,7 +1,7 @@
 """Test-only native fixture launch at medium integrity.
 
-Never changes production UIA policy. Elevated test runners require a genuine
-linked non-elevated token; UAC-disabled accounts fail instead of weakening tests.
+Never changes production UIA policy. Prefer a genuine linked non-elevated token;
+if the runner has no linked logon session, create and verify a restricted token.
 Windows-only implementation: exercise on native CI before relying on this helper.
 """
 import ctypes
@@ -30,6 +30,33 @@ def _verify_medium_token(token, reference):
             actual, expected = str(actual[0]), str(expected[0])
         if actual != expected:
             raise RuntimeError('Fixture token must retain the test user and session')
+
+
+def _fixture_token(current):
+    """Prefer linked token; only WinError 1312 permits documented LUA fallback."""
+    import win32security
+    restricted = False
+    try:
+        token = win32security.GetTokenInformation(current, win32security.TokenLinkedToken)
+    except Exception as exc:
+        code = getattr(exc, 'winerror', 0)
+        if code != 1312:  # ERROR_NO_SUCH_LOGON_SESSION, observed on UAC-disabled CI
+            raise RuntimeError('Elevated test runner has no usable linked token: ' + str(code)) from None
+        administrators = win32security.CreateWellKnownSid(win32security.WinBuiltinAdministratorsSid, None)
+        # Documented DISABLE_MAX_PRIVILEGE | LUA_TOKEN. Never SANDBOX_INERT.
+        token = win32security.CreateRestrictedToken(current, 0x00000005,
+                                                    [(administrators, 0)], None, None)
+        restricted = True
+    try:
+        if restricted:
+            medium = win32security.ConvertStringSidToSid('S-1-16-8192')
+            win32security.SetTokenInformation(token, win32security.TokenIntegrityLevel,
+                                             (medium, 0x00000020))  # SE_GROUP_INTEGRITY
+        _verify_medium_token(token, current)
+        return token
+    except BaseException:
+        token.Close()
+        raise
 
 
 class _NativeProcess:
@@ -77,18 +104,16 @@ def spawn_fixture(args):
         raise ValueError('Fixture executable must be absolute')
     import win32api
     import win32security
-    current = win32security.OpenProcessToken(win32api.GetCurrentProcess(), 0x0008)
+    # Restricted tokens inherit handle rights: QUERY|DUPLICATE|ASSIGN_PRIMARY|
+    # ADJUST_DEFAULT are needed for verification, integrity setting and launch.
+    # These are handle access rights, not privilege activation.
+    current = win32security.OpenProcessToken(win32api.GetCurrentProcess(), 0x008B)
     linked = None
     try:
         if not win32security.GetTokenInformation(current, win32security.TokenElevation):
             _verify_medium_token(current, current)
             return subprocess.Popen(args)
-        try:
-            linked = win32security.GetTokenInformation(current, win32security.TokenLinkedToken)
-        except Exception as exc:
-            raise RuntimeError('Elevated test runner has no usable linked token: ' +
-                               str(getattr(exc, 'winerror', 0))) from None
-        _verify_medium_token(linked, current)
+        linked = _fixture_token(current)
 
         class StartupInfo(ctypes.Structure):
             _fields_ = [('cb', wintypes.DWORD), ('lpReserved', wintypes.LPWSTR),

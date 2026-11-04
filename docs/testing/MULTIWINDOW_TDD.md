@@ -1,0 +1,19 @@
+# ECC TDD and review evidence — multiwindow learning
+
+Requirements are the user's cross-application training request. Curated official ECC 2.2.3 skills used: tdd-workflow, security-review, verification-loop, python-testing (installed native plugin skill files; no lifecycle hooks or Chrome MCP enabled). Project AGENTS.md adapts these skills to pytest/Windows, without inventing an 80% coverage claim.
+
+Journeys: explicit grant/deny/revoke; two allowed applications and excluded third/private/password windows; parameterized capture, editor, save/reopen and replay; focus/wait with timeout/STOP; supported state operations; visible safe unsupported reasons.
+
+- RED checkpoint e41cb6fd6855127ffe97f9a71ba9481fd21c8503: seven core tests failed on missing multiwindow API/schema; four UI tests failed on missing consent/picker/editor/diagnostic wiring; native portable units failed for missing root/privacy/window/state APIs.
+- GREEN: new core/UI/executor tests pass along with original tests. Recorder keeps exact app/window on every action, only coalesces adjacent same-element text, and inserts bounded wait/focus on switches.
+- Review found callback/polled timestamps assigned after potentially stalled provider reads. Two handler-wiring regressions reproduced the issue and now verify events arriving in pause remain excluded after a simulated delay into resume. Timestamp is captured before locks/provider calls and reused for focus/action.
+- Legacy scope RED 120e09c: granting another read-only window wrongly removed a prior exact control grant. GREEN db9b933 preserves prior exact titles without control for the new read-only title.
+- Independent ECC security review found no additional concrete bypass after timestamp fix, reviewed exact roots/path/per-window controls/password/error redaction, and executed 19 focused tests. Review did not claim a Windows desktop test.
+- First actual native CI failed correctly on elevated target processes. Safe diagnostics established the runner launches elevated children; production guards remain enabled. Source preflight then proved UAC-disabled runner has no linked token (WinError1312). Test-only fixture launcher now uses documented CreateRestrictedToken DISABLE_MAX_PRIVILEGE|LUA_TOKEN ONLY for1312, disables admin SID, sets medium integrity and verifies nonelevated/nonadmin/sameuser/session before launch. Query/access failures fail tests; no privilege activation, passwords, SANDBOX_INERT or production exceptions.
+- Portable launcher policy/flow tests validate allowed token and all rejection paths, preferred linked flow, narrow fallback, unchanged final checks and handle cleanup. Actual Windows token APIs and fixture UIA patterns require the latest successful CI; fake-unit results are not substituted for them.
+
+Commands: `QT_QPA_PLATFORM=offscreen /workspace/bender-venv/bin/python -m pytest -q`; `python -m compileall -q src tests scripts`; `python -m pip check`; `python -m bender_ai --smoke-test`; `git diff --check`.
+
+Windows workflow runs portable suite, source native preflight, full EXE build/smoke, then native suite against BenderTraining.exe and BenderTrainingPeer.exe from the build. Three native cases must actually execute with zero skips/errors/failures before ZIP upload. The multi-app case covers distinct processes/executable names, real foreground, Invoke/Value/Toggle/SelectionItem/ExpandCollapse, save/reopen/parameterization/replay and independent Win32 state checks; no pattern skip is permitted. JUnit XML/native proof is attached to the ZIP; source and packaged phases are repetitions of the same native cases, not additional unique test cases.
+
+Current outcomes/SHA/CI artifact links belong in the delivery report. Manual desktop acceptance, third-party app compatibility and browser adapters remain separate. See [manual acceptance](../MULTIWINDOW_LEARNING_RU.md).

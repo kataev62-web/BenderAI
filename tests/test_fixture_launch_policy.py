@@ -21,7 +21,10 @@ class IntegritySid:
 
 @pytest.fixture
 def tokens(monkeypatch):
-    current, child = object(), object()
+    class Handle:
+        closed = False
+        def Close(self): self.closed = True
+    current, child = Handle(), Handle()
     data = {
         current: {'user': ('same-user', 0), 'session': 3},
         child: {'elevation': 0, 'integrity': IntegritySid(0x2000),
@@ -68,3 +71,72 @@ def test_token_query_failure_is_not_treated_as_safe(tokens, monkeypatch):
     monkeypatch.setattr(sys.modules['win32security'], 'GetTokenInformation', inaccessible)
     with pytest.raises(OSError):
         _verify_medium_token(child, current)
+
+@pytest.mark.parametrize('failure_code', [1312, 5])
+def test_linked_token_absence_only_uses_restricted_fallback(tokens, monkeypatch, failure_code):
+    import windows_fixture_process as launcher
+    current, child, data = tokens
+    api = sys.modules['win32security']
+    calls = []
+    api.TokenLinkedToken = 'linked'
+    original = api.GetTokenInformation
+    class TokenError(OSError):
+        winerror = failure_code
+    def info(token, information):
+        if information == 'linked': raise TokenError('no linked token')
+        return original(token, information)
+    def restrict(token, flags, disabled, deleted, restricted):
+        calls.append(('restrict', token, flags, disabled, deleted, restricted))
+        return child
+    def set_info(token, information, value):
+        calls.append(('set', token, information, value))
+        data['integrity'] = value
+    monkeypatch.setattr(api, 'GetTokenInformation', info)
+    api.CreateRestrictedToken = restrict
+    api.ConvertStringSidToSid = lambda value: IntegritySid(0x2000) if value == 'S-1-16-8192' else None
+    api.SetTokenInformation = set_info
+    if failure_code != 1312:
+        with pytest.raises(RuntimeError, match='5'):
+            launcher._fixture_token(current)
+        assert calls == []
+    else:
+        assert launcher._fixture_token(current) is child
+        assert calls[0] == ('restrict', current, 0x5, [('administrators', 0)], None, None)
+        assert calls[1][:3] == ('set', child, 'integrity')
+        assert calls[1][3][1] == 0x20
+
+
+def test_linked_token_is_preferred_without_restriction(tokens, monkeypatch):
+    import windows_fixture_process as launcher
+    current, child, _ = tokens
+    api = sys.modules['win32security']
+    api.TokenLinkedToken = 'linked'
+    original = api.GetTokenInformation
+    api.GetTokenInformation = lambda token, info: child if info == 'linked' else original(token, info)
+    assert launcher._fixture_token(current) is child
+
+
+@pytest.mark.parametrize('unsafe_field,unsafe_value', [
+    ('elevation', 1), ('groups', [('administrators', 4)]),
+    ('session', 9), ('user', ('another-user', 0)),
+])
+def test_restricted_token_still_must_pass_unchanged_policy_and_closes_on_failure(tokens, unsafe_field, unsafe_value):
+    import windows_fixture_process as launcher
+    current, child, data = tokens
+    api = sys.modules['win32security']
+    api.TokenLinkedToken = 'linked'
+    original = api.GetTokenInformation
+    class MissingLogon(OSError):
+        winerror = 1312
+    def info(token, information):
+        if information == 'linked': raise MissingLogon('no session')
+        return original(token, information)
+    api.GetTokenInformation = info
+    api.CreateRestrictedToken = lambda *args:child
+    api.ConvertStringSidToSid = lambda value: IntegritySid(0x2000)
+    def set_medium(token, information, value): data['integrity'] = value
+    api.SetTokenInformation = set_medium
+    data[unsafe_field] = unsafe_value
+    with pytest.raises(RuntimeError):
+        launcher._fixture_token(current)
+    assert child.closed

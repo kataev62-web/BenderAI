@@ -30,6 +30,8 @@ def main(title=TITLE):
     user.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
     user.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
     user.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user.SendMessageW.restype = LRESULT
     kernel.GetModuleHandleW.restype = wintypes.HMODULE
     name, submit, status, password = None, None, None, None
     shifted = False
@@ -56,7 +58,7 @@ def main(title=TITLE):
     wc = WNDCLASS(0, proc, 0, 0, instance, None, None, 6, None, 'BenderTrainingFixture')
     if not user.RegisterClassW(ctypes.byref(wc)):
         raise ctypes.WinError(ctypes.get_last_error())
-    hwnd = user.CreateWindowExW(0, wc.lpszClassName, title, 0x00CF0000, 100, 100, 560, 440, None, None, instance, None)
+    hwnd = user.CreateWindowExW(0, wc.lpszClassName, title, 0x00CF0000, 100, 100, 560, 490, None, None, instance, None)
     if not hwnd:
         raise ctypes.WinError(ctypes.get_last_error())
     def control(cls, text, ident, x, y, w, h, style=0):
@@ -69,6 +71,15 @@ def main(title=TITLE):
     control('BUTTON', 'Move button', 1005, 30, 195, 180, 30)
     status = control('STATIC', 'Ready', 1003, 30, 235, 470, 30)
     control('BUTTON', 'Enable notifications', 1007, 30, 275, 230, 30, 0x00000003)
+    # Standard providers expose stable SelectionItem and ExpandCollapse patterns.
+    control('BUTTON', 'Choice A', 1008, 30, 315, 180, 30, 0x00020009)  # WS_GROUP | BS_AUTORADIOBUTTON
+    control('BUTTON', 'Choice B', 1009, 230, 315, 180, 30, 0x00000009)
+    choices = control('COMBOBOX', '', 1006, 30, 355, 300, 140, 0x00210003)  # CBS_DROPDOWNLIST
+    for label in ('First option', 'Second option'):
+        text = ctypes.create_unicode_buffer(label)
+        if user.SendMessageW(choices, 0x0143, 0, ctypes.addressof(text)) < 0:  # CB_ADDSTRING copies text
+            raise RuntimeError('Could not populate native fixture choices')
+    user.SendMessageW(choices, 0x014E, 0, 0)  # CB_SETCURSEL
     user.ShowWindow(hwnd, 5)
     message = wintypes.MSG()
     while user.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:

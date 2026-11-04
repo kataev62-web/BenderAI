@@ -123,6 +123,19 @@ def test_multi_process_capture_save_reopen_parameterize_replay(native_windows, t
             capture.poll()
             return any(s.action == 'uia_toggle' for s in recorder.steps)
         eventually(toggle_seen)
+        bridge.ui.select(selector(1, '1008', 'RadioButton'))
+        def selection_seen():
+            capture.poll()
+            return any(s.action == 'uia_select' and s.args['selector']['automation_id'] == '1008'
+                       for s in recorder.steps)
+        eventually(selection_seen)
+        for state in ('expanded', 'collapsed'):
+            bridge.ui.expand(selector(1, '1006', 'ComboBox'), state)
+            def expansion_seen():
+                capture.poll()
+                return any(s.action == 'uia_expand' and s.args['selector']['automation_id'] == '1006'
+                           and s.args['state'] == state for s in recorder.steps)
+            eventually(expansion_seen)
         with pytest.raises(Denied):
             bridge.ui.set_text(selector(0, '1004'), 'synthetic-password-never-persist')
         with pytest.raises(Denied):
@@ -153,6 +166,7 @@ def test_multi_process_capture_save_reopen_parameterize_replay(native_windows, t
         store.close()
         store = Store(tmp_path / 'skills.db')
         bridge.ui.toggle(selector(1, '1007', 'CheckBox'), 'off')
+        bridge.ui.select(selector(1, '1009', 'RadioButton'))
         for index in range(2):
             bridge.ui.set_text(selector(index), '')
             bridge.ui.click(selector(index, '1005', 'Button'))
@@ -165,6 +179,9 @@ def test_multi_process_capture_save_reopen_parameterize_replay(native_windows, t
         user.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
         user.SendMessageW.restype = ctypes.c_ssize_t
         assert user.SendMessageW(user.GetDlgItem(handles[1], 1007), 0x00F0, 0, 0) == 1  # BM_GETCHECK
+        assert user.SendMessageW(user.GetDlgItem(handles[1], 1008), 0x00F0, 0, 0) == 1
+        assert user.SendMessageW(user.GetDlgItem(handles[1], 1009), 0x00F0, 0, 0) == 0
+        assert user.SendMessageW(user.GetDlgItem(handles[1], 1006), 0x0157, 0, 0) == 0  # CB_GETDROPPEDSTATE
         eventually(lambda: user.GetForegroundWindow() == handles[1])
         # Cancellation and timeout must prevent the subsequent real UI mutation.
         bridge.ui.set_text(selector(0), 'unchanged')
