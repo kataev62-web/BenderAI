@@ -293,7 +293,7 @@ def _record_events(connection, app, title, policy_data, literal_text):
                 selector = Selector(app, title, automation_id, control_type)
                 value = str(new_value) if literal_text and kind == 'set_text' else ''
                 with write_lock:
-                    connection.send(('event', kind, selector.to_dict(), value, time.monotonic()))
+                    connection.send(('event', kind, selector.to_dict(), value, time.perf_counter()))
             except Exception:
                 # Fail visibly instead of silently claiming a complete demonstration.
                 with write_lock:

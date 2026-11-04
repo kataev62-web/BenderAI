@@ -22,6 +22,7 @@ $env:QT_QPA_PLATFORM = 'offscreen'
 $reportPath = Join-Path (Get-Location) 'build/packaged-smoke.json'
 if (Test-Path $reportPath) { Remove-Item $reportPath }
 $process = Start-Process -FilePath dist/BenderAI/BenderAI.exe -ArgumentList '--smoke-test','--native-smoke','--smoke-report',"`"$reportPath`"" -PassThru
+$retainedProcessHandle = $process.Handle
 if (!$process.WaitForExit(60000)) {
     & taskkill.exe /PID $process.Id /T /F
     throw 'Packaged smoke test timed out after 60 seconds'

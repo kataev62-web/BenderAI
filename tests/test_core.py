@@ -153,10 +153,10 @@ def test_delayed_events_from_pause_interval_are_not_recorded():
     selector = Selector('demo.exe','Demo','submit','Button')
     recorder.start()
     recorder.pause()
-    during_pause = time.monotonic()
+    during_pause = time.perf_counter()
     recorder.resume()
     recorder.capture('click',selector,timestamp=during_pause)
-    recorder.capture('click',selector,timestamp=time.monotonic())
+    recorder.capture('click',selector,timestamp=time.perf_counter())
     assert len(recorder.finish('demo').steps) == 1
 
 
@@ -167,6 +167,20 @@ def test_gradle_is_only_explicitly_approved_native_command(tmp_path):
     runner = Executor(ActionRegistry(policy,store),store)
     # Python is used as an innocuous real subprocess to test the approved-command boundary.
     good = Plan([Step('launch_approved_gradle_task',{'project_path':str(tmp_path),'task':'--version'})])
-    assert runner.run(good,confirmed=True).status == 'success'
+    result = runner.run(good,confirmed=True)
+    assert result.status == 'success', (result.error, store.run_steps(result.run_id))
     with pytest.raises(Denied):
         runner.run(Plan([Step('launch_approved_gradle_task',{'project_path':str(tmp_path),'task':'unapproved'})]),confirmed=True)
+
+
+def test_live_recording_survives_coarse_windows_monotonic_clock(monkeypatch):
+    import bender_ai.learning as learning
+    monkeypatch.setattr(learning.time, 'monotonic', lambda: 1000.0)
+    recorder = Recorder('demo.exe','Demo')
+    selector = Selector('demo.exe','Demo','submit','Button')
+    recorder.start()
+    recorder.pause()
+    recorder.capture('click',selector)
+    recorder.resume()
+    recorder.capture('click',selector)
+    assert len(recorder.finish('after resume').steps) == 1

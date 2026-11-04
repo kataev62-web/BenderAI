@@ -17,28 +17,28 @@ class Recorder:
     def start(self):
         self.steps, self.parameters = [], []
         self.active, self.paused = True, False
-        self.started_at = time.monotonic()
+        self.started_at = time.perf_counter()
         self.pause_intervals = []
         self.pause_started = None
 
     def pause(self):
         if not self.paused:
-            self.pause_started = time.monotonic()
+            self.pause_started = time.perf_counter()
         self.paused = True
 
     def resume(self):
         if self.paused and self.pause_started is not None:
-            self.pause_intervals.append((self.pause_started, time.monotonic()))
+            self.pause_intervals.append((self.pause_started, time.perf_counter()))
         self.pause_started = None
         self.paused = False
 
     def capture(self, kind, selector, value='', password=False, timestamp=None):
-        if not self.active or password:
+        if not self.active or password or (timestamp is None and self.paused):
             return
-        moment = time.monotonic() if timestamp is None else timestamp
+        moment = time.perf_counter() if timestamp is None else timestamp
         if moment < self.started_at or (self.pause_started is not None and moment >= self.pause_started):
             return
-        if any(start <= moment <= end for start,end in self.pause_intervals):
+        if any(start <= moment < end for start,end in self.pause_intervals):
             return
         if selector.app.casefold() != self.app or selector.window != self.window:
             return

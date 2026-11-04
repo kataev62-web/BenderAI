@@ -131,11 +131,11 @@ class ActionRegistry:
                     limits['BasicLimitInformation']['LimitFlags'] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
                     win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, limits)
                     win32job.AssignProcessToJobObject(job, int(process._handle))
-                except Exception:
+                except Exception as exc:
                     process.terminate()
                     process.wait(timeout=2)
                     job.Close()
-                    raise Denied('Не удалось изолировать дерево Gradle в Windows Job Object')
+                    raise Denied('Не удалось изолировать дерево Gradle в Windows Job Object: ' + type(exc).__name__ + ', code=' + str(getattr(exc, 'winerror', 'unknown')))
             try:
                 while process.poll() is None:
                     cancel.wait(.05)
