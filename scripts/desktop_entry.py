@@ -1,6 +1,6 @@
 from multiprocessing import freeze_support
-from bender_ai.app import main
 
 if __name__ == '__main__':
     freeze_support()
-    raise SystemExit(main())
+    from bender_ai.entrypoint import run
+    raise SystemExit(run())

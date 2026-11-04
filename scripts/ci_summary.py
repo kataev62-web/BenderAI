@@ -35,6 +35,7 @@ def summarize(path):
 
 
 if __name__ == '__main__':
+    sys.stdout.reconfigure(encoding='utf-8')
     result = summarize(Path(sys.argv[1]))
     destination = os.environ.get('GITHUB_STEP_SUMMARY')
     if destination:
