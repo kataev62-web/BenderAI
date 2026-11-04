@@ -5,7 +5,7 @@ Set-Location (Split-Path $PSScriptRoot -Parent)
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $Python -m pip install -c constraints.txt -e '.[dev]'
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& $Python -m pytest -m 'not windows' -q
+& $Python -m pytest -m 'not windows' -q --junitxml=build/portable-tests.xml
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $Python -c "from pywinauto.uia_defines import IUIA; IUIA()"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -39,11 +39,18 @@ if ($null -eq $process.ExitCode -or $process.ExitCode -ne 0 -or $smoke.status -n
     throw "Packaged smoke test failed: $($process.ExitCode)"
 }
 Copy-Item $reportPath dist/BenderAI/packaged-smoke.json
+Copy-Item build/portable-tests.xml dist/BenderAI/portable-tests.xml
+[xml]$testReport = Get-Content build/portable-tests.xml -Raw -Encoding UTF8
+$suite = $testReport.testsuites.testsuite
 @{
     commit = (& git rev-parse HEAD)
     workflow_run = $env:GITHUB_RUN_ID
     platform = 'windows-x64'
     packaged_smoke = 'passed'
+    tests = [int]$suite.tests
+    skipped = [int]$suite.skipped
+    failures = [int]$suite.failures
+    errors = [int]$suite.errors
     interactive_desktop_verified = $false
 } | ConvertTo-Json | Set-Content dist/BenderAI/BUILD-INFO.json -Encoding UTF8
 Compress-Archive -Path dist/BenderAI/* -DestinationPath dist/BenderAI-windows-x64.zip -Force

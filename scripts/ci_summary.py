@@ -47,3 +47,7 @@ if __name__ == '__main__':
         # Official Actions annotations remain visible even when log viewing needs sign-in.
         escaped = result[:16000].replace('%','%25').replace('\r','%0D').replace('\n','%0A')
         print('::error title=Windows test diagnostics::' + escaped)
+
+    if os.environ.get('GITHUB_ACTIONS') == 'true' and not re.search(r'[1-9][0-9]* failed', result):
+        counts = next((line for line in result.splitlines() if ' passed,' in line), 'Report unavailable')
+        print('::notice title=Test outcome::' + counts)
