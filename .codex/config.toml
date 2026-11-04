@@ -1,0 +1,7 @@
+# Official ECC skills inherit the user-level plugin installation/enablement.
+# These project guards do not install ECC, trust hooks or change model/sandbox/approvals.
+[features]
+hooks = false
+
+[plugins."ecc@ecc".mcp_servers."chrome-devtools"]
+enabled = false

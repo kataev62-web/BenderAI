@@ -1,0 +1,26 @@
+{
+  "kind": "curated-project-guidance-not-plugin",
+  "upstream": "https://github.com/affaan-m/ECC",
+  "commit": "b38be6a7f6350964d59328b52f0624e1d1d552d1",
+  "version": "2.2.3",
+  "native_plugin_installed": true,
+  "hooks_enabled": false,
+  "mcp_enabled": false,
+  "references": {
+    ".codex-plugin/README.md": "dd8fcf11ee129ccc5c51b0b90cbd1f09c51640d2faf05d5c69ff256e4c9ce2d3",
+    ".codex-plugin/plugin.json": "09d1f838f55e4463aa9da6673f812edc33952572e3425eb77dee9ec31280d424",
+    ".agents/plugins/marketplace.json": "a006b8f87d5b90e316bb32386c3a750db0bbecfdb6baa9c7ee3b7320e3a427cb",
+    "hooks/codex-hooks.json": "82924b7630922577ee69850ef63bf8f1b5f149b15983e6dbef2824f809c7f886",
+    "scripts/hooks/session-start.js": "42eba2dbe69334689b84222ff76d997e7d23296634352318050446ce72fa24a8",
+    ".mcp.json": "dcba600bfb519438e259c9670bd465157418bcb85bc71abb3f586d8c27dbb288",
+    "skills/verification-loop/SKILL.md": "9ee288d426660b0c785f534a003a4960fb4d8083a21302d8a4fd9b035b2edbb1",
+    "skills/security-review/SKILL.md": "b9eb6416eebc8dda046674f0a2dbb3be88aff526d182b60a0f55998d3d6d0d8d",
+    "skills/python-testing/SKILL.md": "8f8c24020abbf953727c5995abce8aabeb28d2a593cbc39b7e5de36cf5002abd",
+    "skills/java-coding-standards/SKILL.md": "c7088a434cd7efb4f3bb449bed2178cf683c1d71bc50f8ae5234a8880d3633f4",
+    "skills/tdd-workflow/SKILL.md": "b6a8dd3e5215641cd9c33a46eae1d2b87508a07bc451e2c2fe25591f33a6b519"
+  },
+  "native_plugin_version": "2.2.3",
+  "native_cli_version": "0.166.0-alpha.1",
+  "observed_ecc_skill_count": 350,
+  "observation_scope": "this-cloud-setup-session; verify again on other machines"
+}
