@@ -125,7 +125,7 @@ class ActionRegistry:
             job = None
             if sys.platform == 'win32':
                 import win32job, win32api
-                job = win32job.CreateJobObject(None, None)
+                job = win32job.CreateJobObject(None, '')
                 try:
                     limits = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
                     limits['BasicLimitInformation']['LimitFlags'] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
