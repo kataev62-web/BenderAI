@@ -97,14 +97,25 @@ class WindowsDesktop:
 
 
 def process_name(pid):
-    import win32api
-    import win32con
-    import win32process
-    handle = win32api.OpenProcess(win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    require_windows()
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
     try:
-        return Path(win32process.QueryFullProcessImageName(handle, 0)).name
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = wintypes.DWORD(len(buffer))
+        if not kernel.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(length)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return Path(buffer.value).name
     finally:
-        handle.Close()
+        kernel.CloseHandle(handle)
 
 
 def check_private(title):
