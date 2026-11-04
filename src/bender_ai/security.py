@@ -83,11 +83,13 @@ class Policy:
             if not ntpath.isabs(executable) or ntpath.basename(executable).casefold() != app:
                 raise Denied('Нужен абсолютный путь к выбранному .exe')
             self.identity(app, executable)
-        # First explicit grant narrows any legacy process-wide scopes to selected windows.
+        # Keep prior exact control grants, but do not inherit control for a newly read-only window.
+        old_control = list(self.window_scopes.get(app, [])) if app in self.ui_apps else []
+        control_scopes = self.ui_window_scopes.setdefault(app, old_control)
+        # A previously unscoped process becomes explicitly scoped by the new grant.
         scopes = self.window_scopes.setdefault(app, [])
         if title not in scopes:
             scopes.append(title)
-        control_scopes = self.ui_window_scopes.setdefault(app, [])
         if app not in self.read_apps:
             self.read_apps.append(app)
         if control:
