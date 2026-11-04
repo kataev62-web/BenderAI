@@ -127,7 +127,8 @@ def process_name(pid):
 
 def safe_raw_element(element):
     try:
-        return not bool(element.CurrentIsPassword)
+        status = element.CurrentIsPassword
+        return type(status) in (bool, int) and status == 0
     except Exception:
         return False
 
@@ -177,7 +178,7 @@ def check_private(title):
 
 def safe_element(element):
     try:
-        return not bool(element.element_info.element.CurrentIsPassword)
+        return safe_raw_element(element.element_info.element)
     except Exception:
         # Unknown password state must fail closed.
         return False
