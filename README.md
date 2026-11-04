@@ -2,7 +2,7 @@
 
 Локальный визуальный помощник для Windows 10/11 x64. Оригинальный рисованный робот, русский интерфейс, офлайн-команды, явные разрешения и навыки по демонстрации. Рабочее имя; ресурсы «Футурамы» не используются.
 
-**Статус: предварительная реализация 0.1.0, не проверенный Windows-релиз.** Переносимое ядро и Qt-интеграция проверены в Linux. Нативные UIA, запись событий Windows, трей, DPI, глобальная клавиша и упаковка `.exe` требуют проверки на Windows. Не используйте непроверенную автоматизацию с ценными данными.
+**Статус: Windows-кандидат 0.1.0 для ручной приёмки.** [Готовая сборка и точный отчёт](docs/WINDOWS_BUILD_REPORT.md): Windows CI собрал exe и ZIP, проверил его запуск, а отдельный native workflow прошёл цикл обучения на Win32-форме. Трей, глобальная клавиша, кликабельность рабочего стола и физические мониторы ещё требуют [ручной проверки](docs/WINDOWS_MANUAL_TEST.md). Не используйте непроверенные интерактивные сценарии с ценными данными.
 
 ## Запуск в Windows
 
@@ -47,6 +47,6 @@ Linux для разработки ядра/GUI: `python3.12 -m venv .venv`, `.ve
 powershell -File scripts/build_windows.ps1 -Python .venv\Scripts\python.exe
 ```
 
-Результат при успешной сборке: `dist/BenderAI/BenderAI.exe`, `BenderTraining.exe` рядом с ним и **вся** папка `_internal`; переносимый архив `dist/BenderAI-windows-x64.zip`. Не переносите один exe без библиотек. Скрипт запускает тесты, PyInstaller и smoke-test упакованного приложения. CI `.github/workflows/windows.yml` публикует ZIP как артефакт успешного workflow, не как подписанный релиз. В текущей Linux-сессии `.exe` не создан и CI не запускался.
+Результат при успешной сборке: `dist/BenderAI/BenderAI.exe`, `BenderTraining.exe` рядом с ним и **вся** папка `_internal`; переносимый архив `dist/BenderAI-windows-x64.zip`. Не переносите один exe без библиотек. Скрипт запускает тесты, PyInstaller и smoke-test упакованного приложения. CI `.github/workflows/windows.yml` публикует ZIP как артефакт успешного workflow, не как подписанный релиз. Проверенный Windows ZIP уже создан CI: [скачать артефакт](https://github.com/kataev62-web/BenderAI/actions/runs/41801891303/artifacts/13307124986). Для скачивания может потребоваться вход в GitHub. См. [результаты и ограничения проверки](docs/WINDOWS_BUILD_REPORT.md).
 
-[Руководство](docs/USER_GUIDE_RU.md) · [Архитектура](docs/ARCHITECTURE.md) · [Безопасность](docs/SECURITY.md) · [Отчёт о проверках](docs/TEST_REPORT.md) · [Ограничения и дальнейшие работы](docs/ROADMAP.md) · [Лицензии](LICENSE-THIRD-PARTY.md)
+[Руководство](docs/USER_GUIDE_RU.md) · [Архитектура](docs/ARCHITECTURE.md) · [Безопасность](docs/SECURITY.md) · [Актуальный отчёт Windows](docs/WINDOWS_BUILD_REPORT.md) · [Первоначальный отчёт Linux](docs/TEST_REPORT.md) · [Ограничения и дальнейшие работы](docs/ROADMAP.md) · [Лицензии](LICENSE-THIRD-PARTY.md)
