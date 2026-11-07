@@ -251,6 +251,16 @@ class MainWindow(QMainWindow):
         self.validation_target = None
         self.message('Вы', text)
         try:
+            # Deterministic offline commands cost zero tokens even when Ollama is selected.
+            # They still become plans and require the normal permission checks.
+            if self.store.setting('ai', {}).get('provider', 'offline') != 'offline':
+                try:
+                    shortcut = RuleBasedProvider().plan(text)
+                except ValidationError:
+                    pass
+                else:
+                    self.accept_plan(shortcut)
+                    return
             provider = self.provider()
             self.start_task(lambda: provider.plan(text), self.accept_plan)
         except Exception as exc:
