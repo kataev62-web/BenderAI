@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from bender_ai.actions import ActionRegistry, Executor
-from bender_ai.brain import OllamaProvider, CloudProvider, DEFAULT_OLLAMA_MODEL
+from bender_ai.brain import OllamaProvider, CloudProvider, DEFAULT_OLLAMA_MODEL, ProviderConnectionError
 from bender_ai.learning import Recorder
 from bender_ai.models import Selector, Step, Plan, ValidationError
 from bender_ai.security import Policy, Denied
@@ -115,3 +115,39 @@ def test_provider_never_follows_redirect_to_another_origin():
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+def test_http_provider_error_displays_status_without_leaking_body_or_path():
+    from bender_ai.brain import request_json
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b'secret-backend-body')
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(('127.0.0.1', 0), Handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        with pytest.raises(ProviderConnectionError, match=r'HTTP 404') as exc_info:
+            request_json(f'http://127.0.0.1:{server.server_port}/private', {}, 2)
+        assert 'secret-backend-body' not in str(exc_info.value)
+        assert '/private' not in str(exc_info.value)
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join()
+
+
+def test_worker_surfaces_sanitized_provider_errors():
+    from bender_ai.infrastructure import Task
+    def fail():
+        raise ProviderConnectionError('Провайдер недоступен (HTTP 404).')
+    errors = []
+    task = Task(fail)
+    task.failure.connect(errors.append)
+    task.run()
+    assert errors == ['Провайдер недоступен (HTTP 404).']
