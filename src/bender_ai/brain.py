@@ -9,6 +9,10 @@ from .models import Plan, Step, ValidationError, SCHEMAS
 from .security import Denied
 
 
+# A lightweight local default that fits systems with around 4 GB GPU VRAM.
+DEFAULT_OLLAMA_MODEL = 'qwen2.5-coder:3b'
+
+
 class AIProvider(Protocol):
     def plan(self, text: str) -> Plan: ...
 
@@ -63,7 +67,7 @@ def request_json(url, payload, timeout, headers=None):
 
 
 class OllamaProvider:
-    def __init__(self, model='qwen2.5:7b', endpoint='http://127.0.0.1:11434', timeout=30):
+    def __init__(self, model=DEFAULT_OLLAMA_MODEL, endpoint='http://127.0.0.1:11434', timeout=30):
         parts = urlsplit(endpoint)
         if parts.scheme != 'http' or parts.hostname not in ('localhost', '127.0.0.1', '::1') or parts.username:
             raise Denied('Ollama разрешена только на loopback HTTP')
@@ -73,6 +77,8 @@ class OllamaProvider:
         data = request_json(self.endpoint + '/api/chat', {
             'model': self.model, 'stream': False, 'format': 'json',
             'messages': [{'role': 'system', 'content': PROMPT}, {'role': 'user', 'content': text}],
+            # Small bounded context/output keeps local inference feasible on modest PCs.
+            'options': {'num_ctx': 2048, 'num_predict': 512, 'temperature': 0},
         }, self.timeout)
         try:
             return Plan.from_json(data['message']['content'])
