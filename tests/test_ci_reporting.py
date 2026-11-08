@@ -18,3 +18,11 @@ def test_ci_summary_reports_failure_and_skip_without_secrets(tmp_path):
 
     assert '::error title=Windows test diagnostics::' in result.stdout
     assert 'ghp_' not in result.stdout
+
+
+def test_failure_reason_precedes_long_trace_for_public_ci_annotations(tmp_path):
+    from scripts.ci_summary import summarize
+    report=tmp_path/'result.xml'
+    report.write_text('<testsuites><testsuite><testcase name="radio"><failure message="safe concise reason">long trace body</failure></testcase></testsuite></testsuites>',encoding='utf-8')
+    text=summarize(report)
+    assert 'safe concise reason' in text and text.index('safe concise reason')<text.index('long trace body')
