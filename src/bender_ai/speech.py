@@ -76,14 +76,14 @@ class SpeechController:
             return
         if sys.platform != "win32":
             raise RuntimeError("Озвучивание доступно только в Windows")
-        context = multiprocessing.get_context("spawn")
-        receiver, sender = context.Pipe(duplex=False)
         if clip_path is not None:
             from pathlib import Path
             path = Path(clip_path)
             if not path.is_absolute() or path.suffix.casefold() != ".wav":
                 raise ValueError("Нужен абсолютный путь к WAV-файлу")
             clip_path = str(path)
+        context = multiprocessing.get_context("spawn")
+        receiver, sender = context.Pipe(duplex=False)
         process = context.Process(target=_speak_windows, args=(message, sender, clip_path), daemon=True)
         try:
             process.start()
