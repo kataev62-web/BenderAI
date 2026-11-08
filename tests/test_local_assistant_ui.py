@@ -211,3 +211,40 @@ def test_bound_parameter_preview_precedes_confirmation_and_rejection_executes_no
     assert '/allowed/result.txt' in seen[0]
     assert window.pending is plan and window.pending.parameters == ['value_1']
     assert window.task is None and window.store.runs() == []
+
+
+def test_failed_capture_cannot_resume_or_display_active_recording(window):
+    from bender_ai.learning import Recorder
+    window.recorder = Recorder('writer.exe', 'Draft')
+    window.recorder.start()
+    window.recorder.pause()  # CaptureTask pauses the recorder before emitting its failure.
+    window.recording_failed('Запись приостановлена: ошибка UIA.')
+    window.pause_recording()
+    assert window.recorder.paused
+    assert 'ВКЛЮЧЕНА' not in window.record_label.text()
+    assert 'черновик' in window.record_label.text()
+    window.recording_count(4)  # A queued count/ready event cannot restore a live indicator.
+    assert 'ВКЛЮЧЕНА' not in window.record_label.text()
+    assert 'черновик' in window.record_label.text()
+    window.cancel_recording()
+
+
+def test_manual_capture_pause_resume_remains_available(window):
+    from bender_ai.learning import Recorder
+    window.recorder = Recorder('writer.exe', 'Draft')
+    window.recorder.start()
+    window.pause_recording()
+    assert window.recorder.paused
+    window.pause_recording()
+    assert not window.recorder.paused
+    assert 'ВКЛЮЧЕНА' in window.record_label.text()
+    window.cancel_recording()
+
+
+def test_stale_capture_failure_after_recording_is_gone_is_ignored(window):
+    before = window.record_label.text()
+    errors = []
+    window.on_error = errors.append
+    window.recording_failed('Запоздалое событие UIA')
+    assert window.record_label.text() == before
+    assert errors == []

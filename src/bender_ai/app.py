@@ -84,6 +84,7 @@ class MainWindow(QMainWindow):
         install_russian_ui(QApplication.instance())
         self.store, self.test_mode = store, test_mode
         self.task, self.capture_task, self.recorder = None, None, None
+        self.capture_failed = False
         self.pending, self.validation_target = None, None
         self.active_cancel = None
         self.checking_ollama = False
@@ -739,6 +740,7 @@ class MainWindow(QMainWindow):
             return
         self.recorder = Recorder(windows=selected, literal_text=dialog.literal_text.isChecked())
         self.recorder.start()
+        self.capture_failed = False
         self.record_diagnostics.clear()
         from .windows import WindowsCapture
         self.capture_task = CaptureTask(WindowsCapture(self.ui, self.recorder), self)
@@ -753,6 +755,9 @@ class MainWindow(QMainWindow):
         self.record_label.setText('Подключение UIA… дождитесь красного индикатора записи.')
 
     def recording_count(self, count):
+        if self.recorder and self.capture_failed:
+            self.show_capture_failed()
+            return
         if self.recorder:
             state = 'ПАУЗА' if self.recorder.paused else '● ЗАПИСЬ ДЕЙСТВИЙ ВКЛЮЧЕНА'
             windows = getattr(self.recorder, 'windows', ())
@@ -762,11 +767,22 @@ class MainWindow(QMainWindow):
         # Recorder supplies a closed set of safe reason codes, never field text.
         self.record_diagnostics.appendPlainText(str(reason))
 
+    def show_capture_failed(self):
+        self.record_label.setText('ЗАПИСЬ ОСТАНОВЛЕНА • ошибка UIA. Завершите и сохраните черновик или отмените его, затем начните новую запись.')
+
     def recording_failed(self, message):
-        self.record_label.setText('ЗАПИСЬ НА ПАУЗЕ • ошибка UIA. Проверьте черновик; запись может быть неполной.')
+        if self.recorder is None:
+            return
+        self.capture_failed = True
+        self.recorder.pause()
+        self.show_capture_failed()
         self.on_error(message)
 
     def pause_recording(self):
+        if self.recorder and self.capture_failed:
+            self.recorder.pause()
+            self.show_capture_failed()
+            return
         if self.recorder:
             self.recorder.resume() if self.recorder.paused else self.recorder.pause()
             self.record_label.setText('ПАУЗА' if self.recorder.paused else '● ЗАПИСЬ ДЕЙСТВИЙ ВКЛЮЧЕНА')
@@ -788,6 +804,7 @@ class MainWindow(QMainWindow):
         if not self.recorder or not self.end_capture():
             return
         recorder, self.recorder = self.recorder, None
+        self.capture_failed = False
         self.record_label.setText('Запись выключена')
         try:
             plan = recorder.finish('Записанный навык')
@@ -799,6 +816,7 @@ class MainWindow(QMainWindow):
         if self.recorder and self.end_capture():
             self.recorder.cancel()
             self.recorder = None
+            self.capture_failed = False
             self.record_label.setText('Запись отменена; черновик удалён')
 
     def refresh_journal(self):
