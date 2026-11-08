@@ -111,7 +111,7 @@ class ClipLibrary:
         while index < len(text) and matches < 8:
             best = None
             for trigger, path in self.clips:
-                pattern = r"(?<!\\w)" + r"\\s+".join(re.escape(word) for word in trigger.split()) + r"(?!\\w)"
+                pattern = r"(?<!\w)" + r"\s+".join(re.escape(word) for word in trigger.split()) + r"(?!\w)"
                 found = re.search(pattern, text[index:], flags=re.IGNORECASE)
                 if found is None:
                     continue
