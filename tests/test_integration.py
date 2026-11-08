@@ -93,6 +93,7 @@ def test_provider_never_follows_redirect_to_another_origin():
     class Handler(BaseHTTPRequestHandler):
         requests = 0
         def do_POST(self):
+            self.rfile.read(int(self.headers.get('Content-Length',0)))
             type(self).requests += 1
             self.send_response(302)
             self.send_header('Location', '/stolen')
@@ -121,6 +122,8 @@ def test_http_provider_error_displays_status_without_leaking_body_or_path():
     from bender_ai.brain import request_json
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
+            # Drain POST before closing: unread data causes a TCP reset on Windows.
+            self.rfile.read(int(self.headers.get('Content-Length',0)))
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b'secret-backend-body')
