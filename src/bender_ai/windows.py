@@ -11,6 +11,10 @@ from .models import Selector
 from .security import Denied, ensure_uia_app
 
 
+class AppLaunchError(RuntimeError):
+    """Safe, predefined error for Windows application launch verification."""
+
+
 def require_windows():
     if sys.platform != 'win32':
         raise RuntimeError('Эта функция требует Windows 10/11')
@@ -60,12 +64,12 @@ class WindowsDesktop:
             with com_thread():
                 for window in Desktop(backend='uia').windows():
                     try:
-                        if process_name(window.process_id()).casefold() in expected:
+                        if window_owned_by_app(window, expected):
                             return 'Приложение открыто'
                     except (OSError, RuntimeError):
                         continue
             time.sleep(.1)
-        raise RuntimeError('Не удалось подтвердить открытие приложения')
+        raise AppLaunchError('Windows не подтвердила появление окна приложения после запуска')
 
     def open_folder(self, path):
         require_windows()
@@ -169,6 +173,35 @@ def check_process_access(pid):
 def deny_dangerous_name(name):
     if any(token in name.casefold() for token in ('delete', 'remove', 'send', 'pay', 'purchase', 'buy', 'удал', 'отправ', 'оплат', 'купить')):
         raise Denied('Удаление, отправка и финансовые действия запрещены')
+
+
+def window_owned_by_app(window, expected):
+    """Verify process identity, including packaged Calculator inside ApplicationFrameHost.
+
+    Do not infer app identity from localized/window-supplied titles.
+    """
+    try:
+        owner = process_name(window.process_id()).casefold()
+        if owner in expected:
+            return True
+        if owner != 'applicationframehost.exe' or 'calculatorapp.exe' not in expected:
+            return False
+        # Windows Calculator may render UI in another process under the UWP frame.
+        # Check unique child process IDs rather than trusting the outer frame name.
+        pids = set()
+        for element in window.descendants()[:100]:
+            pid = getattr(element.element_info, 'process_id', None)
+            if isinstance(pid, int) and pid > 0:
+                pids.add(pid)
+        for pid in pids:
+            try:
+                if process_name(pid).casefold() in expected:
+                    return True
+            except (OSError, RuntimeError):
+                pass
+    except (OSError, RuntimeError, AttributeError):
+        return False
+    return False
 
 
 def check_private(title):

@@ -27,7 +27,8 @@ class Task(QThread):
         except Exception as exc:
             from .models import ValidationError
             from .security import Denied
-            message = str(exc) if isinstance(exc, (Denied, ValidationError, TimeoutError)) else 'Операция не выполнена: ' + type(exc).__name__ + '. Проверьте настройки или выберите офлайн-режим.'
+            from .brain import ProviderConnectionError
+            message = str(exc) if isinstance(exc, (Denied, ValidationError, TimeoutError, ProviderConnectionError)) else 'Операция не выполнена: ' + type(exc).__name__ + '. Проверьте настройки или выберите офлайн-режим.'
             self.failure.emit(message)
 
 
