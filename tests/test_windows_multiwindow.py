@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import uuid
 
 import pytest
 
@@ -37,19 +38,27 @@ def eventually(predicate, timeout=15, context=None):
 def native_windows():
     from bender_ai.isolation import WindowsBridge
     from bender_ai.windows import process_path
+    import win32gui
+    import win32process
 
     user = ctypes.WinDLL('user32', use_last_error=True)
     user.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
     user.FindWindowW.restype = wintypes.HWND
     user.GetForegroundWindow.restype = wintypes.HWND
+    user.GetDlgItem.argtypes = [wintypes.HWND,ctypes.c_int]
+    user.GetDlgItem.restype = wintypes.HWND
+    user.SendMessageW.argtypes = [wintypes.HWND,wintypes.UINT,wintypes.WPARAM,wintypes.LPARAM]
+    user.SendMessageW.restype = ctypes.c_ssize_t
+    user.PostMessageW.argtypes = [wintypes.HWND,wintypes.UINT,wintypes.WPARAM,wintypes.LPARAM]
     user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-    titles = ['BENDER Multi Training', 'BENDER Multi Peer', 'BENDER Multi Unselected',
-              'BENDER Multi InPrivate']
+    run_token=uuid.uuid4().hex
+    titles = [name+' '+run_token for name in ['BENDER Multi Training', 'BENDER Multi Peer',
+              'BENDER Multi Unselected','BENDER Multi InPrivate']]
     configured = [os.environ.get('BENDER_TRAINING_EXE'), os.environ.get('BENDER_TRAINING_PEER_EXE')]
     assert all(configured) or not any(configured), 'Configure both fixture executables'
     commands = [[str(Path(path).resolve())] if path else [sys.executable, '-m', 'bender_ai.training_form']
                 for path in configured]
-    processes, handles = [], []
+    processes, handles, owned_handles = [], [], []
     bridge = None
     try:
         for command, title in zip([*commands, commands[0], commands[0]], titles):
@@ -64,6 +73,10 @@ def native_windows():
             pids.append(pid.value)
         assert len(set(pids)) == 4
         paths = [process_path(pid) for pid in pids]
+        expected=[commands[0][0],commands[1][0],commands[0][0],commands[0][0]]
+        for actual,wanted,handle,pid,title in zip(paths,expected,handles,pids,titles):
+            assert Path(actual).resolve()==Path(wanted).resolve(), 'Fixture executable identity mismatch'
+            owned_handles.append((handle,pid,title))
         if all(configured):
             assert Path(paths[0]).name.casefold() != Path(paths[1]).name.casefold()
         apps = [Path(path).name.casefold() for path in paths]
@@ -77,9 +90,19 @@ def native_windows():
     finally:
         if bridge:
             bridge.close()
+        for handle,pid,title in owned_handles:
+            try:
+                if (win32gui.IsWindow(handle) and win32gui.GetWindowText(handle)==title
+                        and win32process.GetWindowThreadProcessId(handle)[1]==pid):
+                    user.PostMessageW(handle,0x0010,0,0)  # Close only this run's owned fixture windows.
+            except Exception:
+                pass
         for process in reversed(processes):
             if process.poll() is None:
-                process.terminate()
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    process.terminate()
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
@@ -125,7 +148,11 @@ def test_multi_process_capture_save_reopen_parameterize_replay(native_windows, t
             capture.poll()
             return any(s.action == 'uia_toggle' for s in recorder.steps)
         eventually(toggle_seen, context=recording_context)
-        bridge.ui.select(selector(1, '1008', 'RadioButton'))
+        try:
+            bridge.ui.select(selector(1, '1008', 'RadioButton'))
+        except Exception as exc:
+            checks=[int(user.SendMessageW(user.GetDlgItem(handles[1],ident),0x00F0,0,0)) for ident in (1008,1009)]
+            raise AssertionError('Radio selection failed; actual Win32 checked states='+str(checks)+', error='+type(exc).__name__) from exc
         def selection_seen():
             capture.poll()
             return any(s.action == 'uia_select' and s.args['selector']['automation_id'] == '1008'

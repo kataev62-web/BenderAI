@@ -60,6 +60,9 @@ def test_expand_is_single_verified_operation(monkeypatch):
     assert pattern.CurrentExpandCollapseState == 1
 
 def test_toggle_cannot_loop_forever(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(windows.time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(windows.time,'sleep',lambda value:clock.__setitem__(0,clock[0]+value))
     monkeypatch.setattr(windows, 'com_thread', __import__('contextlib').nullcontext)
     class Pattern:
         CurrentToggleState = 0
@@ -70,7 +73,7 @@ def test_toggle_cannot_loop_forever(monkeypatch):
     ui = windows.WindowsUIA(SimpleNamespace(app=lambda *a,**k:None, window=lambda *a,**k:None))
     monkeypatch.setattr(ui,'_find',lambda s:element)
     with pytest.raises(RuntimeError): ui.toggle(Selector('a.exe','A','check','CheckBox'),'on')
-    assert pattern.count == 3
+    assert pattern.count == 1
 
 def test_dangerous_noninvoke_actions_are_denied():
     with pytest.raises(Denied):
@@ -337,3 +340,89 @@ def test_selection_property_unsupported_boolean_rejected_without_text_read():
         @property
         def iface_value(self): raise AssertionError('selection cannot read text')
     with pytest.raises(Denied): windows._record_operation('selection_state',None,Element(),'RadioButton',False)
+
+
+@pytest.fixture
+def state_adapter(monkeypatch):
+    from contextlib import nullcontext
+    clock = [0.0]
+    monkeypatch.setattr(windows,'com_thread',nullcontext)
+    monkeypatch.setattr(windows.time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(windows.time,'sleep',lambda seconds:clock.__setitem__(0,clock[0]+seconds))
+    ui = windows.WindowsUIA(SimpleNamespace(app=lambda *a,**k:None,window=lambda *a,**k:None))
+    def bind(element):
+        monkeypatch.setattr(ui,'_find',lambda selector:element)
+        return ui
+    return bind
+
+
+@pytest.mark.parametrize('operation', ['select','toggle','expand'])
+def test_async_state_verification_never_reissues_operation(state_adapter, operation):
+    class Pattern:
+        calls = 0
+        reads = 0
+        def Select(self): self.calls += 1
+        def Toggle(self): self.calls += 1
+        def Expand(self): self.calls += 1
+        def state(self):
+            self.reads += 1
+            return int(self.calls > 0 and self.reads > 5)
+        CurrentIsSelected = property(state)
+        CurrentToggleState = property(state)
+        CurrentExpandCollapseState = property(state)
+    pattern = Pattern()
+    element = SimpleNamespace(element_info=SimpleNamespace(name='Safe'),is_enabled=lambda:True,
+        iface_selection_item=pattern,iface_toggle=pattern,iface_expand_collapse=pattern)
+    ui = state_adapter(element)
+    selector = Selector('a.exe','A','control',{'select':'ListItem','toggle':'CheckBox','expand':'TreeItem'}[operation])
+    getattr(ui,operation)(selector,*({'select':(), 'toggle':('on',),'expand':('expanded',)}[operation]))
+    assert pattern.calls == 1
+
+
+@pytest.mark.parametrize('control_type,accept', [('RadioButton',True),('ListItem',False)])
+def test_only_radio_can_verify_selection_from_toggle_pattern(state_adapter,control_type,accept):
+    pattern = SimpleNamespace(CurrentIsSelected=False,Select=lambda:None)
+    element = SimpleNamespace(element_info=SimpleNamespace(name='Safe'),is_enabled=lambda:True,
+        iface_selection_item=pattern,iface_toggle=SimpleNamespace(CurrentToggleState=1))
+    ui = state_adapter(element)
+    selector = Selector('a.exe','A','control',control_type)
+    if accept: ui.select(selector)
+    else:
+        with pytest.raises(Denied): ui.select(selector)
+
+
+def test_radio_refused_selection_remains_failure(state_adapter):
+    count = []
+    element = SimpleNamespace(element_info=SimpleNamespace(name='Safe'),is_enabled=lambda:True,
+        iface_selection_item=SimpleNamespace(CurrentIsSelected=False,Select=lambda:count.append(1)),
+        iface_toggle=SimpleNamespace(CurrentToggleState=0))
+    ui = state_adapter(element)
+    with pytest.raises(Denied): ui.select(Selector('a.exe','A','radio','RadioButton'))
+    assert count == [1]
+
+
+@pytest.mark.parametrize('operation', ['toggle','expand'])
+def test_refused_state_change_is_not_redispatched(state_adapter,operation):
+    calls = []
+    pattern = SimpleNamespace(CurrentToggleState=0,CurrentExpandCollapseState=0,
+        Toggle=lambda:calls.append(1),Expand=lambda:calls.append(1))
+    element = SimpleNamespace(element_info=SimpleNamespace(name='Safe'),is_enabled=lambda:True,
+        iface_toggle=pattern,iface_expand_collapse=pattern)
+    ui = state_adapter(element)
+    with pytest.raises(Denied):
+        getattr(ui,operation)(Selector('a.exe','A','control','CheckBox' if operation == 'toggle' else 'TreeItem'),
+                              'on' if operation == 'toggle' else 'expanded')
+    assert calls == [1]
+
+
+def test_toggle_can_advance_tristate_only_after_verified_progress(state_adapter):
+    class Pattern:
+        CurrentToggleState = 2
+        calls = 0
+        def Toggle(self):
+            self.calls += 1
+            self.CurrentToggleState = {2:0,0:1}[self.CurrentToggleState]
+    pattern = Pattern()
+    element = SimpleNamespace(element_info=SimpleNamespace(name='Safe'),is_enabled=lambda:True,iface_toggle=pattern)
+    state_adapter(element).toggle(Selector('a.exe','A','check','CheckBox'),'on')
+    assert pattern.calls == 2 and pattern.CurrentToggleState == 1

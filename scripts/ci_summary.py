@@ -26,7 +26,8 @@ def summarize(path):
         if issue is None:
             issue = case.find('error')
         name = case.get('classname','') + '.' + case.get('name','')
-        lines.extend(['### ' + name, '', '```text', (issue.text or issue.get('message',''))[:16000].replace('```','~~~'), '```', ''])
+        message=issue.get('message','')[:2000].replace('```','~~~')
+        lines.extend(['### ' + name, '', '```text', message, '```', '', '```text', (issue.text or message)[:16000].replace('```','~~~'), '```', ''])
     if skipped:
         lines.extend(['### Skipped', ''])
         for case in skipped:

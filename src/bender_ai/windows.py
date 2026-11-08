@@ -349,6 +349,19 @@ def safe_element(element):
         return False
 
 
+def _wait_uia_state(predicate, end):
+    """Observe asynchronous provider state without redispatching an action."""
+    while True:
+        try:
+            if predicate():
+                return True
+        except Exception:
+            pass
+        if time.monotonic() >= end:
+            return False
+        time.sleep(min(.025, max(0, end - time.monotonic())))
+
+
 class WindowsUIA:
     """Exact matches only. No fuzzy lookup and no coordinate replay."""
     def __init__(self, policy):
@@ -526,9 +539,23 @@ class WindowsUIA:
             if not element.is_enabled():
                 raise Denied('Элемент недоступен')
             deny_dangerous_name(element.element_info.name)
-            element.iface_selection_item.Select()
-            if not element.iface_selection_item.CurrentIsSelected:
-                raise RuntimeError('UIA не подтвердила выбор')
+            pattern = element.iface_selection_item
+            end = time.monotonic() + 2
+            pattern.Select()
+            def selected():
+                try:
+                    value = pattern.CurrentIsSelected
+                    if type(value) in (bool, int) and value == 1:
+                        return True
+                except Exception:
+                    pass
+                if selector.control_type == 'RadioButton':
+                    # Legacy Win32 radios can expose checked state through TogglePattern.
+                    value = element.iface_toggle.CurrentToggleState
+                    return type(value) is int and value == 1
+                return False
+            if not _wait_uia_state(selected, end):
+                raise Denied('UIA не подтвердила выбор элемента')
 
     def toggle(self, selector, state):
         if state not in ('on', 'off'):
@@ -542,13 +569,25 @@ class WindowsUIA:
             deny_dangerous_name(element.element_info.name)
             pattern = element.iface_toggle
             expected = int(state == 'on')
-            # UIA supports a possible third state; never loop without a bound.
+            end = time.monotonic() + 2
+            def current():
+                value = pattern.CurrentToggleState
+                if type(value) is not int or value not in (0, 1, 2):
+                    raise Denied('UIA не подтвердила состояние переключателя')
+                return value
+            # A further tri-state transition is allowed only after observed progress.
             for _ in range(3):
-                if pattern.CurrentToggleState == expected:
+                previous = current()
+                if previous == expected:
                     return
                 pattern.Toggle()
-            if pattern.CurrentToggleState != expected:
-                raise RuntimeError('UIA не подтвердила переключатель')
+                if not _wait_uia_state(lambda: current() != previous, end):
+                    raise Denied('UIA не подтвердила переключатель')
+                if current() == expected:
+                    return
+                if time.monotonic() >= end:
+                    break
+            raise Denied('UIA не подтвердила переключатель')
 
     def expand(self, selector, state):
         if state not in ('expanded', 'collapsed'):
@@ -562,10 +601,14 @@ class WindowsUIA:
             deny_dangerous_name(element.element_info.name)
             pattern = element.iface_expand_collapse
             expected = int(state == 'expanded')
+            end = time.monotonic() + 2
             if pattern.CurrentExpandCollapseState != expected:
                 (pattern.Expand if expected else pattern.Collapse)()
-            if pattern.CurrentExpandCollapseState != expected:
-                raise RuntimeError('UIA не подтвердила раскрытие')
+            def matches():
+                value = pattern.CurrentExpandCollapseState
+                return type(value) is int and value == expected
+            if not _wait_uia_state(matches, end):
+                raise Denied('UIA не подтвердила раскрытие элемента')
 
     def candidates(self):
         # Native top-level metadata only: no UIA tree access before approval.

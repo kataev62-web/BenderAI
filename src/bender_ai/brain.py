@@ -75,7 +75,13 @@ def request_json(url, payload, timeout, headers=None):
     request = urllib.request.Request(url, data=None if payload is None else json.dumps(payload).encode(),
                                      headers={'Content-Type': 'application/json', **(headers or {})})
     try:
-        with urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout) as response:
+        parts=urlsplit(url)
+        # Local inference must stay local even on PCs configured with an HTTP proxy.
+        # External HTTPS providers keep the user's normal proxy and CA settings.
+        handlers=[NoRedirect()]
+        if parts.scheme=='http' and parts.hostname in ('localhost','127.0.0.1','::1'):
+            handlers.insert(0,urllib.request.ProxyHandler({}))
+        with urllib.request.build_opener(*handlers).open(request, timeout=timeout) as response:
             raw = response.read(1_000_001)
         if len(raw) > 1_000_000:
             raise ValidationError('Ответ провайдера слишком большой')
