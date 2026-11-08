@@ -16,6 +16,7 @@ from .editor import SkillEditor, LABELS, readable_plan
 from .infrastructure import Task, CaptureTask, EmergencyHotkey, data_dir, autostart, install_russian_ui
 from .learning import Recorder
 from .speech import SpeechController
+from .voice_clips import ClipLibrary
 from .models import Plan, ValidationError
 from .security import Policy, SecretVault, Denied
 from .storage import Store
@@ -423,7 +424,14 @@ class MainWindow(QMainWindow):
         self.message('Бендер', answer)
         if self.speech is not None and self.store.setting('speech_enabled', False):
             try:
-                self.speech.speak(answer)
+                clip = None
+                folder = self.store.setting('voice_clips_folder', '')
+                if self.store.setting('speech_mode', 'tts') == 'hybrid' and folder:
+                    try:
+                        clip = ClipLibrary.load(folder).match(answer)
+                    except (ValueError, OSError) as err:
+                        self.message('Голос', 'Звуковые фразы не загружены: ' + str(err))
+                self.speech.speak(answer, clip_path=clip)
                 self.character.state = 'talk'
             except (OSError, RuntimeError, ValueError) as exc:
                 self.message('Голос', 'Не удалось запустить озвучивание: ' + type(exc).__name__)
@@ -934,6 +942,12 @@ class MainWindow(QMainWindow):
         dnd, pinned, animate, startup, network, observer = [QCheckBox() for _ in range(6)]
         speech_enabled = QCheckBox()
         speech_enabled.setChecked(self.store.setting('speech_enabled', False))
+        speech_mode = QComboBox()
+        speech_mode.addItem('Синтез речи', 'tts')
+        speech_mode.addItem('Локальные WAV-реплики + синтез речи', 'hybrid')
+        speech_mode.setCurrentIndex(max(0, speech_mode.findData(self.store.setting('speech_mode', 'tts'))))
+        voice_folder = QLineEdit(self.store.setting('voice_clips_folder', ''))
+        voice_folder.setReadOnly(True)
         for box, value in [(dnd,self.character.dnd),(pinned,self.character.pinned),(animate,self.character.animate),
                            (startup,self.store.setting('autostart',False)),(network,self.policy.network),(observer,self.policy.observer)]:
             box.setChecked(value)
@@ -958,10 +972,41 @@ class MainWindow(QMainWindow):
         hotkey.addItems(['Ctrl+Alt+F12','Ctrl+Shift+F12'])
         hotkey.setCurrentIndex(int(self.store.setting('hotkey_shift',False)))
         for label, field in [('Характер',personality),('Не мешать / пропуск кликов',dnd),('Закрепить позицию',pinned),
-            ('Анимации',animate),('Скорость',speed),('Размер',size),('Озвучивать ответы (локально)',speech_enabled),('Автозапуск Windows',startup),
+            ('Анимации',animate),('Скорость',speed),('Размер',size),('Озвучивать ответы (локально)',speech_enabled),
+            ('Режим голоса',speech_mode),('Папка WAV-реплик',voice_folder),('Автозапуск Windows',startup),
             ('Наблюдатель (без изменений)',observer),('Разрешить облачную сеть',network),('ИИ',provider),
             ('Модель',model),('Адрес облачного API (HTTPS)',endpoint),('Новый API-ключ',key),('Экстренный стоп',hotkey)]:
             form.addRow(label,field)
+        voice_controls = QHBoxLayout()
+        choose_clips = QPushButton('Выбрать папку WAV…')
+        clear_clips = QPushButton('Убрать папку')
+        preview_clip = QPushButton('Прослушать WAV')
+        def select_clips():
+            folder = QFileDialog.getExistingDirectory(dialog, 'Локальная папка звуковых фраз (не загружается в сеть)')
+            if folder:
+                try:
+                    ClipLibrary.load(folder)
+                except (ValueError, OSError) as exc:
+                    QMessageBox.warning(dialog, 'Звуковые фразы', str(exc))
+                    return
+                voice_folder.setText(folder)
+        def preview_clips():
+            if self.speech is None:
+                QMessageBox.warning(dialog, 'Звуковые фразы', 'Прослушивание доступно в Windows')
+                return
+            try:
+                if not voice_folder.text():
+                    raise ValueError('Сначала выберите папку WAV-фраз')
+                clip = ClipLibrary.load(voice_folder.text()).first()
+                self.speech.speak('', clip_path=clip)
+            except (RuntimeError, OSError, ValueError) as exc:
+                QMessageBox.warning(dialog, 'Звуковые фразы', str(exc))
+        choose_clips.clicked.connect(select_clips)
+        clear_clips.clicked.connect(lambda: voice_folder.clear())
+        preview_clip.clicked.connect(preview_clips)
+        for widget in (choose_clips, clear_clips, preview_clip):
+            voice_controls.addWidget(widget)
+        form.addRow(voice_controls)
         def cloud_fields():
             visible = provider.currentData() == 'cloud'
             for field in (network, endpoint, key):
@@ -996,6 +1041,8 @@ class MainWindow(QMainWindow):
             self.store.set_setting('autostart',startup.isChecked())
             self.store.set_setting('personality',personality.currentText())
             self.store.set_setting('speech_enabled',speech_enabled.isChecked())
+            self.store.set_setting('speech_mode',speech_mode.currentData())
+            self.store.set_setting('voice_clips_folder',voice_folder.text().strip())
             if not speech_enabled.isChecked() and self.speech is not None:
                 self.speech.stop()
             self.store.set_setting('ai',{'provider':provider.currentData(),'model':model.text(),'endpoint':endpoint.text()})
