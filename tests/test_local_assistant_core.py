@@ -164,3 +164,12 @@ def test_launch_worker_disconnect_is_unverified_and_has_no_retry(tmp_path):
     result=runner.run(Plan([Step('open_app',{'app_id':'calculator'})]),confirmed=True)
     assert result.status=='unverified' and d.calls==1
     store.close()
+
+
+def test_run_journal_never_persists_model_or_command_derived_plan_names(tmp_path):
+    store=Store(tmp_path/'db')
+    runner=Executor(ActionRegistry(Policy(),store),store)
+    plan=Plan([Step('list_skills',{})],name='synthetic-private-command-content')
+    assert runner.run(plan).status=='success'
+    assert 'synthetic-private-command-content' not in json.dumps(store.runs())
+    store.close()
