@@ -151,3 +151,16 @@ def test_data_file_commands_are_parsed_offline_without_model():
     assert p.plan('Прочитай файл "C:\\Work\\note.txt"').steps[0].action=='read_text_file'
     assert p.plan('Создай файл "C:\\Work\\note.txt" с текстом "Привет"').steps[0].args['text']=='Привет'
     assert p.plan('Скопируй файл "C:\\Work\\note.txt" в "C:\\Work\\copy.txt"').steps[0].action=='copy_file'
+
+
+def test_launch_worker_disconnect_is_unverified_and_has_no_retry(tmp_path):
+    from bender_ai.isolation import ChannelDisconnected
+    class Desktop:
+        calls=0
+        def open_app(self,exe):
+            self.calls+=1
+            raise ChannelDisconnected('Процесс UIA завершился')
+    store=Store(tmp_path/'db');d=Desktop();runner=Executor(ActionRegistry(Policy(),store,desktop=d),store)
+    result=runner.run(Plan([Step('open_app',{'app_id':'calculator'})]),confirmed=True)
+    assert result.status=='unverified' and d.calls==1
+    store.close()
