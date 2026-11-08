@@ -245,12 +245,35 @@ class ExplorerCapture:
         self.ready = False
         self.last = None
         self.pending_creations = []
+        self._permission_target = None
         self.started = time.monotonic()
 
     def poll(self):
         if time.monotonic() - self.started > 300:
             raise TimeoutError('Лимит записи: 5 минут')
-        current = self.explorer.snapshot(self.selector.to_dict())
+        try:
+            current = self.explorer.snapshot(self.selector.to_dict())
+        except ExplorerPermissionRequired as exc:
+            if exc.mode == 'read':
+                self._permission_target = exc.path
+            raise
+        if self.last is not None and current['hwnd'] != self.last['hwnd']:
+            raise Denied('Выбранное окно Проводника изменилось')
+        if self._permission_target is not None:
+            # A successful snapshot proves the GUI has granted the required root.
+            # Record only a fresh observation of the exact folder the user approved,
+            # not a transition inferred across the permission dialog's pause.
+            if Path(current['path']).resolve() != Path(self._permission_target).resolve():
+                self._permission_target = None
+                self.recorder.report('explorer_review')
+            elif not self.recorder.paused and self.recorder.active:
+                accepted = _record_semantic(self.recorder, self.selector, Step('explorer_navigate', {
+                    'selector': self.selector.to_dict(), 'path': current['path']}),
+                    current['timestamp'], current['observation_started'])
+                if accepted:
+                    self._permission_target = None
+            self.last, self.ready = current, True
+            return
         if not current.get('active') or (self.last is not None and not self.last.get('active')):
             self.last, self.ready = current, True
             return

@@ -56,6 +56,7 @@ class Task(QThread):
 
 
 class CaptureTask(QThread):
+    permission_required = Signal(str, str)
     count = Signal(int)
     diagnostic = Signal(str)
     ready = Signal()
@@ -65,13 +66,41 @@ class CaptureTask(QThread):
         super().__init__(parent)
         self.capture = capture
         self.stop_event = threading.Event()
+        self.permission_ready = threading.Event()
+        self.permission_approved = False
+        self.waiting_permission = False
+
+    def resolve_permission(self, approved):
+        self.permission_approved = approved is True
+        self.permission_ready.set()
 
     def run(self):
         ready_sent = False
         diagnostics_sent = 0
         try:
             while not self.stop_event.wait(.04):
-                self.capture.poll()
+                from .explorer import ExplorerPermissionRequired
+                try:
+                    self.capture.poll()
+                except ExplorerPermissionRequired as exc:
+                    if self.capture.recorder.paused:
+                        continue
+                    self.capture.recorder.pause()
+                    self.permission_ready.clear()
+                    self.permission_approved = False
+                    self.waiting_permission = True
+                    self.permission_required.emit(exc.mode, exc.path)
+                    # No further native access while the user reviews the exact scope.
+                    while not self.permission_ready.wait(.05):
+                        if self.stop_event.is_set():
+                            return
+                    self.waiting_permission = False
+                    if self.stop_event.is_set():
+                        return
+                    if not self.permission_approved:
+                        from .security import Denied
+                        raise Denied('Разрешение выбранной папке не выдано')
+                    continue
                 diagnostics = getattr(self.capture.recorder, "diagnostics", [])
                 for reason in diagnostics[diagnostics_sent:]:
                     self.diagnostic.emit(reason)
@@ -85,6 +114,7 @@ class CaptureTask(QThread):
             self.capture.recorder.pause()
             self.failure.emit('Запись приостановлена: ошибка доступа UIA или лимит. Проверьте окно и шаги.')
         finally:
+            self.waiting_permission = False
             self.capture.close()
 
 

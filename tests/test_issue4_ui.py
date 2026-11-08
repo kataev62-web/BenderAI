@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import json
 import pytest
 from PySide6.QtWidgets import QApplication
 from bender_ai.app import MainWindow
@@ -201,7 +202,7 @@ def test_missing_folder_permission_is_explicit_and_never_executes_after_grant(wi
     while window.task is not None and time.monotonic() < end:
         app.processEvents()
         time.sleep(.005)
-    assert prompts and str(target) in prompts[0]
+    assert prompts and json.dumps(str(target), ensure_ascii=False) in prompts[0]
     assert window.policy.write_roots == ([str(target)] if consent else [])
     assert window.pending is plan and window.store.runs() == []
     assert not (target / 'Example').exists()
@@ -222,3 +223,65 @@ def test_learning_candidate_picker_grants_only_selected_window_after_consent(win
     assert 'calc.exe' not in window.policy.read_apps
     assert window.policy.launch_apps == []
     assert started == ([[('writer.exe', 'Draft')]] if consent else [])
+
+
+@pytest.mark.parametrize('consent', [False, True])
+def test_recording_folder_permission_requires_consent_and_resumes_before_reply(window, tmp_path, consent):
+    from bender_ai.learning import Recorder
+    import threading
+    window.recorder = Recorder(windows=[('explorer.exe', 'Work')])
+    window.recorder.start()
+    window.recorder.pause()
+    decisions = []
+    task = SimpleNamespace(wait=lambda timeout: True, deleteLater=lambda: None, stop_event=threading.Event(), resolve_permission=lambda accepted: decisions.append((accepted, window.recorder.paused)))
+    window.capture_task = task
+    window.policy.read_roots = []
+    window.confirm = lambda *args: consent
+    window.recording_permission_required('read', str(tmp_path), task)
+    assert decisions == [(consent, not consent)]
+    assert window.policy.read_roots == ([str(tmp_path)] if consent else [])
+    assert window.recorder.paused is not consent
+    window.capture_task = None
+    window.cancel_recording()
+
+
+def test_stop_during_recording_folder_dialog_prevents_grant_and_resume(window, tmp_path):
+    from bender_ai.learning import Recorder
+    import threading
+    window.recorder = Recorder(windows=[('explorer.exe', 'Work')])
+    window.recorder.start()
+    window.recorder.pause()
+    decisions = []
+    task = SimpleNamespace(wait=lambda timeout: True, deleteLater=lambda: None, stop_event=threading.Event(), resolve_permission=decisions.append)
+    window.capture_task = task
+    window.policy.read_roots = []
+    def stopped(*args):
+        window.stop()
+        return True
+    window.confirm = stopped
+    window.recording_permission_required('read', str(tmp_path), task)
+    assert decisions == [False]
+    assert window.policy.read_roots == [] and window.recorder.paused
+    window.capture_task = None
+    window.cancel_recording()
+
+
+def test_stop_before_queued_folder_permission_prevents_even_opening_dialog(window, tmp_path):
+    from bender_ai.learning import Recorder
+    import threading
+    window.recorder = Recorder(windows=[('explorer.exe', 'Work')])
+    window.recorder.start()
+    window.recorder.pause()
+    decisions = []
+    task = SimpleNamespace(wait=lambda timeout: True, deleteLater=lambda: None,
+                           waiting_permission=True, stop_event=threading.Event(), resolve_permission=decisions.append)
+    window.capture_task = task
+    window.policy.read_roots = []
+    queued_generation = window.generation
+    window.stop()
+    window.confirm = lambda *args: pytest.fail('stale queued permission must not show a dialog')
+    window.recording_permission_required('read', str(tmp_path), task, queued_generation)
+    assert decisions and not any(decisions)
+    assert window.policy.read_roots == [] and window.recorder.paused
+    window.capture_task = None
+    window.cancel_recording()

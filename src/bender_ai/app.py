@@ -651,6 +651,8 @@ class MainWindow(QMainWindow):
         self.plan_view.clear()
         if self.recorder:
             self.recorder.pause()
+            if self.capture_task is not None and getattr(self.capture_task, 'waiting_permission', False):
+                self.capture_task.resolve_permission(False)
             self.record_label.setText('ЗАПИСЬ НА ПАУЗЕ • СТОП. Можно завершить или отменить.')
         self.statusBar().showMessage('СТОП • следующие шаги запрещены')
         self.message('Бендер', 'Стоп. План сброшен; активная задача получает сигнал отмены. Уже переданное ОС действие нельзя отозвать.')
@@ -1053,6 +1055,9 @@ class MainWindow(QMainWindow):
         self.capture_task.ready.connect(lambda: self.recording_count(0))
         self.capture_task.diagnostic.connect(self.recording_diagnostic)
         self.capture_task.failure.connect(self.recording_failed)
+        self.capture_task.permission_required.connect(
+            lambda mode, path, source=self.capture_task, generation=self.generation:
+                self.recording_permission_required(mode, path, source, generation))
         self.capture_task.finished.connect(lambda: self.quit_app() if self.shutting_down else None)
         self.capture_task.start()
         self.tabs.setCurrentIndex(2)
@@ -1091,6 +1096,46 @@ class MainWindow(QMainWindow):
             self.recording_count(len(self.recorder.steps))
         except (ValueError, Denied):
             self.on_error('Предложение изменилось или запись приостановлена. Проверьте черновик.')
+
+    def recording_permission_required(self, mode, path, source=None, generation=None):
+        task = source if source is not None else self.capture_task
+        recorder = self.recorder
+        generation = self.generation if generation is None else generation
+        if task is None:
+            return
+        def current():
+            return (self.capture_task is task and self.recorder is recorder and recorder is not None
+                    and self.generation == generation and not self.capture_failed and not task.stop_event.is_set()
+                    and getattr(task, 'waiting_permission', True))
+        if not current() or mode not in ('read', 'write') or not isinstance(path, str) or not Path(path).is_absolute():
+            task.resolve_permission(False)
+            return
+        recorder.pause()
+        self.record_label.setText('ЗАПИСЬ НА ПАУЗЕ • требуется разрешение выбранной папке.')
+        rights = 'чтение папки и её подпапок' if mode == 'read' else 'создание подпапок в выбранной папке'
+        allowed = self.confirm('Разрешить переход в выбранную папку?',
+                               'Разрешить ' + rights + ' и записать переход в эту выбранную папку?\n'
+                               + json.dumps(path, ensure_ascii=False)
+                               + '\nОбласть сохраняется явно; другие диски и папки не добавляются. «Нет» завершит захват с сохранением черновика.')
+        # A global STOP or cancellation can run while the modal dialog processes events.
+        if not current():
+            task.resolve_permission(False)
+            return
+        if not allowed:
+            self.capture_failed = True
+            self.record_label.setText('ЗАПИСЬ ОСТАНОВЛЕНА • разрешение не выдано. Сохраните черновик или начните новую запись.')
+            task.resolve_permission(False)
+            return
+        reviewed = Policy(**self.policy.to_dict())
+        if path not in reviewed.read_roots:
+            reviewed.read_roots.append(path)
+        if mode == 'write' and path not in reviewed.write_roots:
+            reviewed.write_roots.append(path)
+        self.policy.__dict__.update(reviewed.__dict__)
+        self.persist_policy()
+        recorder.resume()
+        task.resolve_permission(True)
+        self.recording_count(len(recorder.steps))
 
     def recording_count(self, count):
         self.explorer_review_button.setEnabled(bool(self.recorder and not self.capture_failed and any(c.pending_creations for c in self.explorer_captures)))

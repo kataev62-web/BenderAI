@@ -217,3 +217,26 @@ def test_shell_dispatch_exception_is_unverified_not_safe_to_retry(shell_backend)
     browser.Navigate2=partial_dispatch
     with pytest.raises(OperationUnverified) as exc:backend.navigate(selector,str(child))
     assert len(calls)==1 and 'private' not in str(exc.value)
+
+
+@pytest.mark.parametrize('still_requested', [True,False])
+def test_capture_after_exact_jit_grant_records_only_fresh_verified_requested_navigation(shell_backend,monkeypatch,still_requested):
+    from bender_ai.explorer import ExplorerCapture,ExplorerPermissionRequired
+    from bender_ai.learning import Recorder
+    from bender_ai import explorer
+    backend,policy,selector,parent,outside,state=shell_backend
+    clock=[10.0]
+    monkeypatch.setattr(explorer.time,'perf_counter',lambda:clock[0])
+    recorder=Recorder(windows=[('explorer.exe','Allowed')]);recorder.start()
+    capture=ExplorerCapture(backend,recorder,selector);capture.poll()
+    state.update(path=str(outside),title=outside.name);clock[0]=20
+    with pytest.raises(ExplorerPermissionRequired):capture.poll()
+    recorder.pause()
+    assert recorder.steps==[] and policy.read_roots==[str(parent)]
+    # The GUI explicitly grants this exact folder, then resumes the central recorder.
+    policy.read_roots.append(str(outside))
+    if not still_requested:state.update(path=str(parent),title=parent.name)
+    clock[0]=30;recorder.resume()
+    capture.poll();clock[0]=31;capture.poll()
+    assert [step.action for step in recorder.steps]==(['explorer_navigate'] if still_requested else [])
+    if still_requested:assert recorder.steps[0].args['path']==str(outside)
