@@ -12,12 +12,17 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
 from .actions import ActionRegistry, Executor, Cancellation
 from .brain import RuleBasedProvider, OllamaProvider, CloudProvider, DEFAULT_OLLAMA_MODEL
 from .character import Character, CharacterPack
-from .editor import SkillEditor
-from .infrastructure import Task, CaptureTask, EmergencyHotkey, data_dir, autostart
+from .editor import SkillEditor, LABELS
+from .infrastructure import Task, CaptureTask, EmergencyHotkey, data_dir, autostart, install_russian_ui
 from .learning import Recorder
 from .models import Plan, ValidationError
 from .security import Policy, SecretVault, Denied
 from .storage import Store
+
+
+STATUS_LABELS = {'success': 'Успешно', 'unverified': 'Не подтверждено', 'failed': 'Ошибка',
+                 'error': 'Ошибка', 'cancelled': 'Отменено', 'unvalidated': 'Не проверено',
+                 'pending': 'Ожидает проверки', 'running': 'Выполняется', 'skipped': 'Пропущено', 'interrupted': 'Прервано'}
 
 
 class RecordingWindowsDialog(QDialog):
@@ -51,10 +56,12 @@ class RecordingWindowsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self, store, test_mode=False):
         super().__init__()
+        install_russian_ui(QApplication.instance())
         self.store, self.test_mode = store, test_mode
         self.task, self.capture_task, self.recorder = None, None, None
         self.pending, self.validation_target = None, None
         self.active_cancel = None
+        self.checking_ollama = False
         self.generation = 0
         self.shutting_down = False
         self.hotkey = None
@@ -86,6 +93,13 @@ class MainWindow(QMainWindow):
         heading = QLabel('BENDER AI   /   Исполнитель · офлайн по умолчанию')
         heading.setStyleSheet('font-size: 19px; font-weight: bold; padding: 12px;')
         layout.addWidget(heading)
+        self.provider_status = QLabel()
+        self.provider_status.setWordWrap(True)
+        layout.addWidget(self.provider_status)
+        provider_row = QHBoxLayout()
+        self.ollama_check_button = self.button('Проверить Ollama', self.check_ollama, provider_row)
+        layout.addLayout(provider_row)
+        self.refresh_provider_status()
         self.chat = QTextBrowser()
         self.chat.setOpenExternalLinks(False)
         layout.addWidget(self.chat)
@@ -234,6 +248,7 @@ class MainWindow(QMainWindow):
         self.send_button.setEnabled(False)
         self.execute_button.setEnabled(False)
         self.character.state = 'thinking'
+        self.statusBar().showMessage('Выполняется задача… СТОП доступен.')
         task.result.connect(lambda result: callback(result) if generation == self.generation else None)
         task.failure.connect(lambda error: self.on_error(error) if generation == self.generation else None)
         task.finished.connect(self.task_finished)
@@ -243,6 +258,7 @@ class MainWindow(QMainWindow):
     def task_finished(self):
         old = self.task
         self.task = None
+        self.checking_ollama = False
         self.send_button.setEnabled(True)
         self.execute_button.setEnabled(self.pending is not None)
         if self.character.state not in ('error', 'success', 'sleep'):
@@ -257,15 +273,50 @@ class MainWindow(QMainWindow):
             self.quit_app()
 
     def on_error(self, message):
+        if self.checking_ollama:
+            self.refresh_provider_status()
+            self.provider_status.setText(self.provider_status.text() + '\nOllama: ' + message)
         self.character.state = 'error'
         self.message('Ошибка', message)
         self.statusBar().showMessage('Ошибка • выполнение остановлено')
+
+    def refresh_provider_status(self):
+        config = self.store.setting('ai', {})
+        kind = config.get('provider', 'offline')
+        if kind == 'ollama':
+            self.provider_status.setText('Локальный ИИ: Ollama • модель: ' + (config.get('model') or DEFAULT_OLLAMA_MODEL)
+                                         + ' • подключение не проверено. Простые команды работают офлайн.')
+        elif kind == 'cloud':
+            self.provider_status.setText('Облачный ИИ • модель: ' + config.get('model', '') + ' • требуется разрешение сети.')
+        else:
+            self.provider_status.setText('Офлайн • простые команды без модели и подключения к сети.')
+
+    def check_ollama(self):
+        if self.task is not None or self.recorder is not None:
+            self.on_error('Завершите текущую задачу или запись перед проверкой Ollama.')
+            return
+        config = self.store.setting('ai', {})
+        try:
+            provider = OllamaProvider(config.get('model') or DEFAULT_OLLAMA_MODEL)
+        except (ValidationError,Denied) as exc:
+            self.on_error(str(exc))
+            return
+        token = Cancellation(12)
+        self.active_cancel = token
+        self.checking_ollama = True
+        self.provider_status.setText('Проверка локального подключения Ollama…')
+        def checked(result):
+            self.refresh_provider_status()
+            self.provider_status.setText(self.provider_status.text() + '\nOllama • модель: ' + result['model'] + ' • ' + result['message'])
+            self.statusBar().showMessage('Проверка Ollama завершена')
+        self.start_task(lambda: provider.status(cancellation=token), checked)
 
     def provider(self):
         config = self.store.setting('ai', {})
         kind = config.get('provider', 'offline')
         if kind == 'ollama':
-            return OllamaProvider(config.get('model') or DEFAULT_OLLAMA_MODEL)
+            from .brain import HybridProvider
+            return HybridProvider(OllamaProvider(config.get('model') or DEFAULT_OLLAMA_MODEL))
         if kind == 'cloud':
             return CloudProvider(self.policy, SecretVault(), config.get('endpoint', ''), config.get('model', ''), enabled=True)
         return RuleBasedProvider()
@@ -277,13 +328,26 @@ class MainWindow(QMainWindow):
         if text.casefold().rstrip('.!') in ('стоп', 'остановись'):
             self.stop()
             return
-        if self.task is not None:
+        if self.task is not None or self.recorder is not None:
             return
         self.input.clear()
         self.pending = None
         self.validation_target = None
         self.message('Вы', text)
         try:
+            requested = text.casefold()
+            prefix = 'выполни навык '
+            explicit_skill = requested.startswith(prefix)
+            if explicit_skill:
+                requested = requested[len(prefix):].strip()
+            matches = [skill for skill in self.store.skills() if skill['name'].casefold() == requested]
+            if len(matches) > 1:
+                raise ValidationError('Несколько навыков с этим названием. Выберите нужный во вкладке «Навыки».')
+            if matches:
+                self.accept_plan(self.store.load_skill(matches[0]['id']))
+                return
+            if explicit_skill:
+                raise ValidationError('Навык не найден. Проверьте название во вкладке «Навыки».')
             # Deterministic offline commands cost zero tokens even when Ollama is selected.
             # They still become plans and require the normal permission checks.
             if self.store.setting('ai', {}).get('provider', 'offline') != 'offline':
@@ -295,11 +359,14 @@ class MainWindow(QMainWindow):
                     self.accept_plan(shortcut)
                     return
             provider = self.provider()
-            self.start_task(lambda: provider.plan(text), self.accept_plan)
+            token = Cancellation(95)
+            self.active_cancel = token
+            self.start_task(lambda: provider.plan(text, cancellation=token), self.accept_plan)
         except Exception as exc:
             self.on_error(str(exc))
 
     def accept_plan(self, plan):
+        self.statusBar().showMessage('План готов • проверьте шаги и нажмите «Выполнить». Действия ещё не запущены.')
         self.pending = plan
         self.plan_view.setPlainText(plan.to_json())
         self.execute_button.setEnabled(True)
@@ -333,15 +400,19 @@ class MainWindow(QMainWindow):
             def run():
                 return self.executor.run(plan, confirmed=True, progress=lambda i,a: self.task.progress.emit(i,a), cancellation=token)
             if self.start_task(run, lambda result: self.on_run(result, target)):
-                self.task.progress.connect(lambda i,a: self.statusBar().showMessage(f'Шаг {i}: {a}'))
+                self.task.progress.connect(lambda i,a: self.statusBar().showMessage(f'Шаг {i}: {LABELS.get(a, a)}'))
                 self.character.state = 'working'
         except Exception as exc:
             self.on_error(str(exc))
 
     def on_run(self, result, target=None):
         self.character.state = 'success' if result.status == 'success' else 'error'
-        self.message('Результат', f'{result.status}: ' + (result.error or json.dumps(result.outputs, ensure_ascii=False)))
-        self.statusBar().showMessage(result.status)
+        status = STATUS_LABELS.get(result.status, 'Неизвестный результат')
+        detail = result.error or (json.dumps(result.outputs, ensure_ascii=False) if result.outputs else 'План выполнен.' if result.status == 'success' else 'Проверьте журнал выполнения.')
+        for action, label in LABELS.items():
+            detail = detail.replace('(' + action + ')', '(' + label + ')')
+        self.message('Результат', status + ': ' + detail)
+        self.statusBar().showMessage(status)
         QTimer.singleShot(2500, lambda: setattr(self.character, 'state', 'sleep' if self.character.dnd else 'idle') if self.task is None else None)
         if target:
             self.store.mark_validation(*target, result.status)
@@ -349,6 +420,9 @@ class MainWindow(QMainWindow):
 
     def stop(self):
         self.generation += 1
+        if self.checking_ollama:
+            self.refresh_provider_status()
+            self.provider_status.setText(self.provider_status.text() + '\nПроверка Ollama отменена.')
         self.executor.stop()
         if self.active_cancel:
             self.active_cancel.event.set()
@@ -370,7 +444,7 @@ class MainWindow(QMainWindow):
         self.skill_rows = self.store.skills()
         for skill in self.skill_rows:
             versions = self.store.versions(skill['id'])
-            state = versions[0]['validation']
+            state = STATUS_LABELS.get(versions[0]['validation'], 'Не проверено')
             self.skill_list.addItem(f"{skill['name']} • v{skill['current_version']} • {state}")
 
     def selected_skill(self):
@@ -449,7 +523,7 @@ class MainWindow(QMainWindow):
         try:
             skill = self.selected_skill()
             versions = self.store.versions(skill['id'])
-            labels = [f"v{v['version']} • {v['created_at']} • {v['validation']}" for v in versions]
+            labels = [f"v{v['version']} • {v['created_at']} • {STATUS_LABELS.get(v['validation'],'Не проверено')}" for v in versions]
             label, ok = QInputDialog.getItem(self, 'Откат версии', 'Выберите сохранённую версию', labels, 0, False)
             if ok and self.confirm('Восстановить?', 'Будет создана новая версия с выбранными шагами.'):
                 self.store.restore_version(skill['id'], versions[labels.index(label)]['version'])
@@ -496,17 +570,21 @@ class MainWindow(QMainWindow):
             return
         candidate = candidates[labels.index(label)]
         mode, ok = QInputDialog.getItem(self, 'Вид разрешения', 'Разрешить:',
-                                       ['Только чтение', 'Чтение и управление'], 0, False)
+                                       ['Только чтение', 'Чтение и управление', 'Чтение, управление и запуск'], 0, False)
         if not ok:
             return
-        control = mode == 'Чтение и управление'
+        launch = mode == 'Чтение, управление и запуск'
+        control = launch or mode == 'Чтение и управление'
         preview = (candidate['app'] + '\nОкно: ' + candidate['title'] + '\nФайл: ' + candidate['executable']
-                   + '\nПрава: ' + ('чтение и управление' if control else 'только чтение')
+                   + '\nПрава: ' + ('чтение, управление и запуск выбранного файла без аргументов' if launch else 'чтение и управление' if control else 'только чтение')
                    + '\nНе выбирайте окна с чувствительными данными. Поддержка UIA зависит от приложения.')
         if not self.confirm('Выдать выбранные права?', preview):
             return
         try:
-            self.policy.grant_app(candidate['app'], candidate['title'], candidate['executable'], control=control)
+            rights = {'control': control}
+            if launch:
+                rights['launch'] = True
+            self.policy.grant_app(candidate['app'], candidate['title'], candidate['executable'], **rights)
             self.persist_policy()
         except (ValueError, Denied) as exc:
             self.on_error(str(exc))
@@ -700,9 +778,9 @@ class MainWindow(QMainWindow):
         runs = self.store.runs()
         lines = []
         for run in runs:
-            lines.append(f"{run['created_at']} • {run['name']} • {run['status']}")
+            lines.append(f"{run['created_at']} • {run['name']} • {STATUS_LABELS.get(run['status'], 'Неизвестно')}")
             for step in self.store.run_steps(run['id']):
-                lines.append(f"  {step['position']+1}. {step['action']}: {step['status']} {step['detail']}")
+                lines.append(f"  {step['position']+1}. {LABELS.get(step['action'], step['action'])}: {STATUS_LABELS.get(step['status'], 'Неизвестно')} {step['detail']}")
         self.journal.setPlainText('\n'.join(lines) or 'Запусков пока нет.')
 
     def clear_history(self):
@@ -766,9 +844,10 @@ class MainWindow(QMainWindow):
         size.setRange(80,240)
         size.setValue(self.character.width())
         provider = QComboBox()
-        provider.addItems(['offline','ollama','cloud'])
+        for title, value in [('Офлайн — простые команды без модели', 'offline'), ('Локальный ИИ — Ollama', 'ollama'), ('Облачный ИИ — отдельно разрешить', 'cloud')]:
+            provider.addItem(title, value)
         ai = self.store.setting('ai', {})
-        provider.setCurrentText(ai.get('provider','offline'))
+        provider.setCurrentIndex(max(0, provider.findData(ai.get('provider', 'offline'))))
         model = QLineEdit(ai.get('model') or DEFAULT_OLLAMA_MODEL)
         model.setPlaceholderText('Ollama: qwen2.5-coder:3b')
         model.setToolTip('Для локальной модели: ollama pull qwen2.5-coder:3b')
@@ -782,8 +861,15 @@ class MainWindow(QMainWindow):
         for label, field in [('Характер',personality),('Не мешать / пропуск кликов',dnd),('Закрепить позицию',pinned),
             ('Анимации',animate),('Скорость',speed),('Размер',size),('Автозапуск Windows',startup),
             ('Наблюдатель (без изменений)',observer),('Разрешить облачную сеть',network),('ИИ',provider),
-            ('Модель',model),('Cloud HTTPS endpoint',endpoint),('Новый API-ключ',key),('Экстренный стоп',hotkey)]:
+            ('Модель',model),('Адрес облачного API (HTTPS)',endpoint),('Новый API-ключ',key),('Экстренный стоп',hotkey)]:
             form.addRow(label,field)
+        def cloud_fields():
+            visible = provider.currentData() == 'cloud'
+            for field in (network, endpoint, key):
+                field.setVisible(visible)
+                form.labelForField(field).setVisible(visible)
+        provider.currentIndexChanged.connect(cloud_fields)
+        cloud_fields()
         pack_button = QPushButton('Загрузить локальный пакет персонажа…')
         def load_pack():
             folder = QFileDialog.getExistingDirectory(dialog, 'Папка с manifest.json и PNG')
@@ -802,7 +888,7 @@ class MainWindow(QMainWindow):
         if not dialog.exec():
             return
         try:
-            if provider.currentText() == 'cloud' and not self.confirm('Включить облачный ИИ?', 'Текст новых команд будет отправляться выбранному HTTPS API. Скриншоты и история автоматически не отправляются. Продолжить?'):
+            if provider.currentData() == 'cloud' and not self.confirm('Включить облачный ИИ?', 'Текст новых команд будет отправляться выбранному HTTPS API. Скриншоты и история автоматически не отправляются. Продолжить?'):
                 return
             if key.text():
                 SecretVault().save(key.text())
@@ -810,7 +896,7 @@ class MainWindow(QMainWindow):
             autostart(startup.isChecked())
             self.store.set_setting('autostart',startup.isChecked())
             self.store.set_setting('personality',personality.currentText())
-            self.store.set_setting('ai',{'provider':provider.currentText(),'model':model.text(),'endpoint':endpoint.text()})
+            self.store.set_setting('ai',{'provider':provider.currentData(),'model':model.text(),'endpoint':endpoint.text()})
             self.store.set_setting('hotkey_shift',hotkey.currentIndex() == 1)
             self.policy.network, self.policy.observer = network.isChecked(), observer.isChecked()
             self.persist_policy()
@@ -820,6 +906,7 @@ class MainWindow(QMainWindow):
             self.character.resize(size.value(),round(size.value()*146/116))
             self.character.ensure_visible()
             self.save_state()
+            self.refresh_provider_status()
             if not self.test_mode:
                 self.register_hotkey()
         except Exception as exc:
@@ -867,6 +954,10 @@ def main():
     app.setStyleSheet('''
         QWidget { font-family: 'Segoe UI', sans-serif; font-size: 13px; color: #e0e8f2; }
         QMainWindow, QDialog, QMenu { background: #172132; }
+        QMenuBar { background: #22364e; color: #ffffff; padding: 5px; }
+        QMenuBar::item { background: transparent; padding: 7px 12px; }
+        QMenuBar::item:selected, QMenu::item:selected { background: #326a78; color: #ffffff; }
+        QMenu::item { padding: 8px 20px; }
         QTabWidget::pane { border: 1px solid #344156; border-radius: 8px; background: #1c293c; }
         QTabBar::tab { background: #172132; padding: 12px 18px; }
         QTabBar::tab:selected { color: #7de2d1; border-bottom: 2px solid #7de2d1; }

@@ -36,6 +36,7 @@ class Policy:
     read_apps: list[str] = field(default_factory=list)
     gradle_projects: dict[str, dict] = field(default_factory=dict)
     window_scopes: dict[str, list[str]] = field(default_factory=dict)
+    launch_apps: list[str] = field(default_factory=list)
     app_paths: dict[str, str] = field(default_factory=dict)
     ui_window_scopes: dict[str, list[str]] = field(default_factory=dict)
     network: bool = False
@@ -73,12 +74,16 @@ class Policy:
         if expected and executable_key(expected) != executable_key(executable):
             raise Denied('Исполняемый файл не совпадает с разрешённым приложением')
 
-    def grant_app(self, app, title, executable='', control=True):
+    def grant_app(self, app, title, executable='', control=True, launch=False):
         ensure_uia_app(app)
         if not isinstance(title, str) or not title.strip() or len(title)>512 or '\x00' in title:
             raise Denied('Нужен точный непустой заголовок окна')
         check_private_title(title)
         app = app.casefold()
+        if launch:
+            if not control or not (executable or self.app_paths.get(app)):
+                raise Denied('Для запуска нужны отдельное согласие, управление и точный путь EXE')
+            self._launch_name(app)
         if executable:
             if not ntpath.isabs(executable) or ntpath.basename(executable).casefold() != app:
                 raise Denied('Нужен абсолютный путь к выбранному .exe')
@@ -99,6 +104,29 @@ class Policy:
                 control_scopes.append(title)
         if executable:
             self.app_paths[app] = executable
+        if launch and app not in self.launch_apps:
+            self.launch_apps.append(app)
+
+    @staticmethod
+    def _launch_name(app):
+        ensure_uia_app(app)
+        if app in {'python.exe','pythonw.exe','java.exe','javaw.exe','wscript.exe','cscript.exe',
+                   'mshta.exe','rundll32.exe','regsvr32.exe'}:
+            raise Denied('Запуск интерпретаторов и системных загрузчиков не поддерживается')
+
+    def approved_launch(self, app):
+        app=app.casefold()
+        self._launch_name(app)
+        self.app(app,control=True)
+        path=self.app_paths.get(app)
+        if app not in self.launch_apps or not path or not ntpath.isabs(path) or ntpath.basename(path).casefold()!=app:
+            raise Denied('Нет отдельного разрешения запуска этого EXE')
+        titles=tuple(self.ui_window_scopes.get(app,self.window_scopes.get(app,[])))
+        if not titles:
+            raise Denied('Для запуска нужно разрешить точные окна приложения')
+        for title in titles:
+            self.window(app,title,control=True)
+        return path,titles
 
     def revoke_app(self, app):
         app = app.casefold()
@@ -107,6 +135,7 @@ class Policy:
         self.window_scopes.pop(app, None)
         self.ui_window_scopes.pop(app, None)
         self.app_paths.pop(app, None)
+        self.launch_apps[:] = [x for x in self.launch_apps if x.casefold()!=app]
 
     def to_dict(self):
         return asdict(self)

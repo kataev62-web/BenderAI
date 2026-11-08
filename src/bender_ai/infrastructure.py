@@ -3,7 +3,30 @@ import ctypes
 import os
 import sys
 import threading
-from PySide6.QtCore import QThread, Signal, QAbstractNativeEventFilter
+from PySide6.QtCore import QThread, Signal, QAbstractNativeEventFilter, QTranslator, QLibraryInfo
+
+
+class RussianButtons(QTranslator):
+    """Fallback for frozen distributions without Qt translation resources."""
+    def isEmpty(self):
+        return False
+
+    def translate(self, context, source, disambiguation=None, n=-1):
+        return {'Save': 'Сохранить', 'Cancel': 'Отмена', 'OK': 'ОК', 'Yes': 'Да', 'No': 'Нет',
+                'Open': 'Открыть', 'Close': 'Закрыть', 'Apply': 'Применить', 'Reset': 'Сбросить',
+                'Help': 'Справка', 'Discard': 'Не сохранять', 'Retry': 'Повторить',
+                'Abort': 'Прервать', 'Ignore': 'Пропустить'}.get(source.replace('&', ''), '')
+
+
+def install_russian_ui(app):
+    if hasattr(app, '_bender_translators'):
+        return
+    qt_translation = QTranslator(app)
+    qt_translation.load('qtbase_ru', QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath))
+    fallback = RussianButtons(app)
+    app.installTranslator(qt_translation)
+    app.installTranslator(fallback)
+    app._bender_translators = (qt_translation, fallback)
 
 
 def data_dir():

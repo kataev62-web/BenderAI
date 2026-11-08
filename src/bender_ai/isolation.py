@@ -3,6 +3,11 @@ import multiprocessing
 import threading
 import time
 from .security import Policy, Denied
+from .models import OperationUnverified
+
+
+class ChannelDisconnected(RuntimeError):
+    """The worker exited before returning an operation outcome."""
 
 
 class IsolatedChannel:
@@ -35,7 +40,7 @@ class IsolatedChannel:
                     if time.monotonic() >= end:
                         raise TimeoutError('UIA не ответила вовремя; изолированный процесс остановлен')
                     if not self.process.is_alive():
-                        raise RuntimeError('Процесс UIA завершился')
+                        raise ChannelDisconnected('Процесс UIA завершился')
                 result = self.connection.recv()
                 if cancellation:
                     cancellation.check()
@@ -63,7 +68,7 @@ def windows_service(connection):
     from .windows import WindowsUIA, WindowsDesktop, AppLaunchError
     from .models import Selector
     methods = {'ui': {'click', 'set_text', 'exists', 'assert_state', 'focus', 'windows', 'snapshot', 'select', 'toggle', 'expand', 'window_exists', 'candidates'},
-               'desktop': {'open_app', 'open_folder', 'active'}}
+               'desktop': {'open_app', 'open_approved_app', 'open_folder', 'active'}}
     while True:
         try:
             kind, method, args, policy_data = connection.recv()
@@ -73,11 +78,14 @@ def windows_service(connection):
             if method not in methods.get(kind, set()):
                 raise Denied('Неизвестный native-инструмент')
             policy = Policy(**policy_data)
-            target = WindowsUIA(policy) if kind == 'ui' else WindowsDesktop()
+            target = WindowsUIA(policy) if kind == 'ui' else WindowsDesktop(policy)
             if kind == 'desktop' and method == 'active':
                 args = (policy,)
             value = getattr(target, method)(*args)
             connection.send(('ok', value))
+        except OperationUnverified:
+            connection.send(('unverified', 'Приложение могло открыться, но Windows не подтвердила его окно. '
+                             'Не повторяйте запуск автоматически.'))
         except Exception as exc:
             # UI errors can contain private text. Return class only, plus trusted policy errors.
             connection.send(('error', str(exc) if isinstance(exc, (Denied, AppLaunchError)) else type(exc).__name__))
@@ -103,6 +111,8 @@ class _RemoteAdapter:
             if name == 'active':
                 args = ()
             status, value = self.bridge.channel.call((self.kind, name, args, self.bridge.policy.to_dict()), self.cancellation)
+            if status == 'unverified':
+                raise OperationUnverified(value)
             if status != 'ok':
                 raise Denied('Windows-адаптер: ' + value)
             return value

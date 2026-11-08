@@ -46,10 +46,13 @@ jobs:
       - name: Native source UIA preflight with non-elevated fixtures
         env:
           BENDER_WINDOWS_INTEGRATION: '1'
+          BENDER_LAUNCH_REPORT: build/launch-preflight.json
         run: python -m pytest -m windows -v --junitxml=build/native-preflight.xml
       - name: Publish source UIA preflight diagnostics
         if: always()
-        run: python scripts/ci_summary.py build/native-preflight.xml
+        run: |
+          python scripts/ci_summary.py build/native-preflight.xml
+          python -c "import json,pathlib; p=pathlib.Path('build/launch-preflight.json'); rows=json.loads(p.read_text(encoding='utf-8'))['apps'] if p.exists() else []; [print('::notice title=App launch preflight::'+r['app']+': '+r['status']) for r in rows]"
       - name: Package and smoke test frozen executable
         shell: pwsh
         run: ./scripts/build_windows.ps1
@@ -61,16 +64,20 @@ jobs:
         run: python -m pytest -m windows -v --junitxml=build/native-results.xml
       - name: Publish native UIA diagnostics
         if: always()
-        run: python scripts/ci_summary.py build/native-results.xml
+        run: |
+          python scripts/ci_summary.py build/native-results.xml
+          python -c "import json,pathlib; p=pathlib.Path('build/launch-report.json'); rows=json.loads(p.read_text(encoding='utf-8'))['apps'] if p.exists() else []; [print('::notice title=App launch outcome::'+r['app']+': '+r['status']) for r in rows]"
       - name: Require native tests and attach evidence to package
         shell: pwsh
         run: |
           [xml]$native = Get-Content build/native-results.xml -Raw -Encoding UTF8
           $suite = $native.testsuites.testsuite
-          if ([int]$suite.tests -lt 3 -or [int]$suite.skipped -ne 0 -or [int]$suite.failures -ne 0 -or [int]$suite.errors -ne 0) {
+          if ([int]$suite.tests -lt 4 -or [int]$suite.skipped -ne 0 -or [int]$suite.failures -ne 0 -or [int]$suite.errors -ne 0) {
             throw 'Native tests must execute with zero skips, failures and errors'
           }
           Copy-Item build/native-results.xml dist/BenderAI/native-results.xml
+          Copy-Item build/launch-report.json dist/BenderAI/launch-report.json
+          Copy-Item build/launch-preflight.json dist/BenderAI/launch-preflight.json
           $info = Get-Content dist/BenderAI/BUILD-INFO.json -Raw | ConvertFrom-Json
           $info | Add-Member -NotePropertyName native_uia_tests -NotePropertyValue ([int]$suite.tests) -Force
           $info | Add-Member -NotePropertyName native_uia_skipped -NotePropertyValue 0 -Force
@@ -91,3 +98,5 @@ jobs:
             build/native-results.xml
             build/native-preflight.xml
             build/packaged-smoke.json
+            build/launch-report.json
+            build/launch-preflight.json

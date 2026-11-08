@@ -4,15 +4,20 @@ from pathlib import Path
 import ctypes
 from ctypes import wintypes
 import os
+import ntpath
 import subprocess
 import sys
 import time
-from .models import Selector
-from .security import Denied, ensure_uia_app
+from .models import Selector, OperationUnverified
+from .security import Denied, ensure_uia_app, executable_key
 
 
 class AppLaunchError(RuntimeError):
-    """Safe, predefined error for Windows application launch verification."""
+    """Safe, predefined error for an application dispatch that failed."""
+
+
+class AppLaunchUnverified(OperationUnverified):
+    """Dispatch succeeded, but the resulting application window is unverified."""
 
 
 def require_windows():
@@ -47,29 +52,74 @@ def downloads_folder():
 
 
 class WindowsDesktop:
+    def __init__(self, policy=None):
+        self.policy = policy
+
     def open_app(self, executable):
         require_windows()
-        system = Path(os.environ['WINDIR']) / 'System32'
-        path = system / executable
         if executable not in ('notepad.exe', 'calc.exe', 'explorer.exe'):
             raise Denied('Приложение не разрешено')
-        if executable == 'explorer.exe':
-            path = Path(os.environ['WINDIR']) / executable
-        process = subprocess.Popen([str(path)], shell=False)
-        # Modern Windows apps may hand over to an existing process; verify a matching UI window.
-        from pywinauto import Desktop
-        end = time.monotonic() + 8
-        expected = {'notepad.exe': ('notepad.exe',), 'calc.exe': ('calculatorapp.exe', 'calculator.exe'), 'explorer.exe': ('explorer.exe',)}[executable]
-        while time.monotonic() < end:
+        system = Path(os.environ['WINDIR']) / 'System32'
+        path = (Path(os.environ['WINDIR']) / executable if executable == 'explorer.exe'
+                else system / executable)
+        expected = {'notepad.exe': ('notepad.exe',),
+                    'calc.exe': ('calculatorapp.exe', 'calculator.exe'),
+                    'explorer.exe': ('explorer.exe',)}[executable]
+        def verified_window():
+            from pywinauto import Desktop
+            with com_thread():
+                return any(window_owned_by_app(window, expected)
+                           for window in Desktop(backend='uia').windows())
+        return self._launch_verified(path, verified_window)
+
+    def open_approved_app(self, app_id):
+        require_windows()
+        if self.policy is None:
+            raise Denied('Нет разрешения запуска приложения')
+        path, titles = self.policy.approved_launch(app_id)
+        def verified_window():
+            from pywinauto import Desktop
             with com_thread():
                 for window in Desktop(backend='uia').windows():
                     try:
-                        if window_owned_by_app(window, expected):
-                            return 'Приложение открыто'
-                    except (OSError, RuntimeError):
+                        title = window.window_text()
+                        check_private(title)
+                        if title not in titles:
+                            continue
+                        if executable_key(process_path(window.process_id())) == executable_key(path):
+                            return True
+                    except (Denied, OSError):
                         continue
-            time.sleep(.1)
-        raise AppLaunchError('Windows не подтвердила появление окна приложения после запуска')
+                return False
+        return self._launch_verified(path, verified_window)
+
+    @staticmethod
+    def _launch_verified(path, verified_window):
+        def result(already_open):
+            return {'status': 'verified', 'message': 'Приложение уже открыто' if already_open
+                    else 'Приложение открыто', 'executable': str(path),
+                    'already_open': already_open}
+        try:
+            if verified_window():
+                return result(True)
+        except Exception:
+            # A metadata lookup failure cannot establish that an app is open.
+            pass
+        try:
+            subprocess.Popen([str(path)], shell=False)
+        except Exception:
+            raise AppLaunchError('Windows не смогла запустить разрешённое приложение') from None
+        # Modern apps may hand off to another process. Never dispatch a second time.
+        try:
+            end = time.monotonic() + 8
+            while time.monotonic() < end:
+                if verified_window():
+                    return result(False)
+                time.sleep(.1)
+        except Exception:
+            pass
+        raise AppLaunchUnverified('Приложение могло открыться, но Windows не подтвердила его окно. '
+                                  'Не повторяйте запуск автоматически.') from None
 
     def open_folder(self, path):
         require_windows()
@@ -175,16 +225,76 @@ def deny_dangerous_name(name):
         raise Denied('Удаление, отправка и финансовые действия запрещены')
 
 
+def process_package_family(pid):
+    """Read Windows package identity, never infer it from a directory name."""
+    require_windows()
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    query = kernel.GetPackageFamilyName
+    query.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.UINT), wintypes.LPWSTR]
+    query.restype = wintypes.LONG
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        length = wintypes.UINT(0)
+        result = query(handle, ctypes.byref(length), None)
+        if result == 15700:  # APPMODEL_ERROR_NO_PACKAGE
+            return ''
+        if result != 122 or not 0 < length.value <= 512:  # ERROR_INSUFFICIENT_BUFFER
+            raise OSError('Не удалось проверить пакет приложения')
+        value = ctypes.create_unicode_buffer(length.value)
+        if query(handle, ctypes.byref(length), value) != 0:
+            raise OSError('Не удалось проверить пакет приложения')
+        return value.value
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def trusted_app_process(pid, expected):
+    """Built-in identity requires an OS installation path or OS package family."""
+    path = process_path(pid)
+    owner = ntpath.basename(path).casefold()
+    if owner not in expected:
+        return False
+    root = os.environ.get('WINDIR', '')
+    if not root:
+        return False
+    system_paths = {
+        'notepad.exe': (ntpath.join(root, 'System32', 'notepad.exe'), ntpath.join(root, 'notepad.exe')),
+        'explorer.exe': (ntpath.join(root, 'explorer.exe'),),
+        'applicationframehost.exe': (ntpath.join(root, 'System32', 'ApplicationFrameHost.exe'),),
+    }
+    if any(executable_key(path) == executable_key(candidate)
+           for candidate in system_paths.get(owner, ())):
+        return True
+    families = {'notepad.exe': 'Microsoft.WindowsNotepad_8wekyb3d8bbwe',
+                'calculatorapp.exe': 'Microsoft.WindowsCalculator_8wekyb3d8bbwe',
+                'calculator.exe': 'Microsoft.WindowsCalculator_8wekyb3d8bbwe'}
+    expected_family = families.get(owner)
+    return bool(expected_family and process_package_family(pid).casefold() == expected_family.casefold())
+
+
 def window_owned_by_app(window, expected):
     """Verify process identity, including packaged Calculator inside ApplicationFrameHost.
 
     Do not infer app identity from localized/window-supplied titles.
     """
     try:
-        owner = process_name(window.process_id()).casefold()
-        if owner in expected:
+        pid = window.process_id()
+        if trusted_app_process(pid, expected):
+            if 'explorer.exe' in expected:
+                # Explorer also owns the desktop/taskbar, which are not file browsers.
+                try:
+                    window_class = window.class_name()
+                except AttributeError:
+                    window_class = window.element_info.class_name
+                return window_class in ('CabinetWClass', 'ExploreWClass')
             return True
-        if owner != 'applicationframehost.exe' or 'calculatorapp.exe' not in expected:
+        if 'calculatorapp.exe' not in expected or not trusted_app_process(pid, ('applicationframehost.exe',)):
             return False
         # Windows Calculator may render UI in another process under the UWP frame.
         # Check unique child process IDs rather than trusting the outer frame name.
@@ -195,7 +305,7 @@ def window_owned_by_app(window, expected):
                 pids.add(pid)
         for pid in pids:
             try:
-                if process_name(pid).casefold() in expected:
+                if trusted_app_process(pid, expected):
                     return True
             except (OSError, RuntimeError):
                 pass

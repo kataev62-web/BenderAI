@@ -4,8 +4,11 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QLa
     QPushButton, QTableWidget, QTableWidgetItem, QDialogButtonBox, QFormLayout,
     QComboBox, QPlainTextEdit, QMessageBox, QInputDialog)
 from .models import Plan, Step, SCHEMAS
+from .infrastructure import install_russian_ui
+from PySide6.QtWidgets import QApplication
 
-LABELS = {'uia_select': 'Выбрать элемент', 'uia_toggle': 'Переключить (on/off)',
+LABELS = {'read_text_file':'Прочитать текстовый файл','write_text_file':'Создать текстовый файл',
+          'copy_file':'Скопировать файл','uia_select': 'Выбрать элемент', 'uia_toggle': 'Переключить (on/off)',
           'uia_expand': 'Раскрыть / свернуть', 'wait_for_window': 'Ждать окно', 'uia_click': 'Нажать кнопку', 'uia_set_text': 'Ввести текст', 'wait_for_element': 'Ждать элемент',
           'assert_element': 'Проверить элемент', 'open_app': 'Открыть приложение', 'open_folder': 'Открыть папку',
           'create_folder': 'Создать папку', 'get_active_window': 'Активное окно', 'list_skills': 'Список навыков',
@@ -16,6 +19,7 @@ LABELS = {'uia_select': 'Выбрать элемент', 'uia_toggle': 'Пере
 class StepDialog(QDialog):
     def __init__(self, step, parent=None):
         super().__init__(parent)
+        install_russian_ui(QApplication.instance())
         self.setWindowTitle('Изменить шаг')
         self.step = step
         form = QFormLayout(self)
@@ -32,7 +36,8 @@ class StepDialog(QDialog):
                 field = QLineEdit(str(value))
                 self.fields[key] = field
                 form.addRow({'text': 'Текст / ${параметр}', 'timeout': 'Таймаут, сек.', 'expected_state': 'exists / enabled / visible / text:значение',
-                             'state': 'on / off; expanded / collapsed', 'app_id': 'notepad / calculator / explorer', 'parent': 'Родительская папка', 'name': 'Имя папки'}.get(key,key), field)
+                             'path':'Путь к файлу / папке', 'source':'Исходный файл', 'target':'Новый файл',
+                             'state': 'on / off; expanded / collapsed', 'app_id': 'ID разрешённого приложения (notepad или writer.exe)', 'parent': 'Родительская папка', 'name': 'Имя папки'}.get(key,key), field)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.validate)
         buttons.rejected.connect(self.reject)
@@ -52,6 +57,7 @@ class StepDialog(QDialog):
 class SkillEditor(QDialog):
     def __init__(self, plan, parent=None):
         super().__init__(parent)
+        install_russian_ui(QApplication.instance())
         self.setWindowTitle('Редактор навыка — сохранение после проверки')
         self.resize(900, 560)
         self.plan = Plan.from_dict(plan.to_dict())

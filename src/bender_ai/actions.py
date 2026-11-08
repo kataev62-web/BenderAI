@@ -7,7 +7,7 @@ import subprocess
 import sys
 import threading
 import time
-from .models import Plan, Step, Selector, ValidationError, MUTATING
+from .models import Plan, Step, Selector, ValidationError, MUTATING, OperationUnverified
 from .security import Denied
 
 
@@ -63,14 +63,27 @@ class ActionRegistry:
             self.policy.window(selector.app, selector.window, control=action in MUTATING)
             self.policy.app(selector.app, control=action in MUTATING)
         if action == 'open_app' and args['app_id'] not in self.apps:
-            raise Denied('Приложение отсутствует в белом списке')
+            self.policy.approved_launch(args['app_id'])
         if action in ('open_folder', 'list_folder'):
             self.policy.path(self.folder(args['path']), 'read')
+        if action in ('read_text_file','write_text_file'):
+            self.data_file(args['path'], 'read' if action=='read_text_file' else 'write')
+        if action == 'copy_file':
+            self.data_file(args['source'],'read')
+            self.data_file(args['target'],'write')
         if action == 'create_folder':
             parent = self.policy.path(args['parent'], 'write')
             self.policy.path(str(parent / args['name']), 'write')
         if action == 'launch_approved_gradle_task':
             self.gradle(args)
+
+    def data_file(self, raw, mode):
+        path=self.policy.path(raw,mode)
+        if path.suffix.casefold() not in {'.txt','.md','.csv','.json','.log'} or ':' in path.name:
+            raise Denied('Разрешены только файлы данных .txt, .md, .csv, .json, .log без потоков NTFS')
+        if path.name.split('.')[0].upper() in {'CON','PRN','AUX','NUL',*('COM'+str(i) for i in range(1,10)),*('LPT'+str(i) for i in range(1,10))}:
+            raise Denied('Имя устройства Windows запрещено')
+        return path
 
     def gradle(self, args):
         project = str(Path(args['project_path']).resolve())
@@ -103,6 +116,46 @@ class ActionRegistry:
                 cancel.check()
                 result.append(entry.name)
             return result
+        if a == 'read_text_file':
+            path=self.data_file(p['path'],'read')
+            if not path.is_file():
+                raise ValidationError('Нужен существующий обычный файл')
+            with path.open('rb') as source:
+                data=source.read(65537)
+            if len(data)>65536:
+                raise ValidationError('Для чтения поддерживается UTF-8 файл не более 64 КиБ')
+            try:
+                return data.decode('utf-8')
+            except UnicodeDecodeError:
+                raise ValidationError('Файл должен быть текстом UTF-8') from None
+        if a == 'write_text_file':
+            path=self.data_file(p['path'],'write')
+            cancel.check()
+            with path.open('x',encoding='utf-8',newline='') as target:
+                target.write(p['text'])
+            if path.read_text('utf-8')!=p['text']:
+                raise RuntimeError('Созданный файл не прошёл проверку')
+            return 'Текстовый файл создан и проверен; существующие файлы не перезаписываются'
+        if a == 'copy_file':
+            source=self.data_file(p['source'],'read')
+            target=self.data_file(p['target'],'write')
+            if not source.is_file():
+                raise ValidationError('Нужен существующий обычный исходный файл')
+            data=bytearray()
+            with source.open('rb') as stream:
+                while True:
+                    cancel.check()
+                    block=stream.read(65536)
+                    if not block:break
+                    data.extend(block)
+                    if len(data)>8*1024*1024:
+                        raise ValidationError('Копирование ограничено 8 МиБ')
+            cancel.check()
+            with target.open('xb') as stream:
+                stream.write(data)
+            if target.stat().st_size!=len(data):
+                raise RuntimeError('Размер копии не подтверждён')
+            return 'Файл скопирован без перезаписи существующего'
         if a == 'create_folder':
             parent = self.policy.path(p['parent'], 'write')
             target = parent / p['name']
@@ -114,7 +167,13 @@ class ActionRegistry:
             if self.desktop is None:
                 raise RuntimeError('Действие доступно только в Windows')
             if a == 'open_app':
-                return self.desktop.open_app(self.apps[p['app_id']])
+                from .isolation import ChannelDisconnected
+                try:
+                    if p['app_id'] in self.apps:
+                        return self.desktop.open_app(self.apps[p['app_id']])
+                    return self.desktop.open_approved_app(p['app_id'])
+                except (TimeoutError, EOFError, BrokenPipeError, ChannelDisconnected):
+                    raise OperationUnverified('Результат запуска не подтверждён: приложение могло открыться. Повторный запуск не выполнялся.') from None
             if a == 'open_folder':
                 return self.desktop.open_folder(self.policy.path(self.folder(p['path']), 'read'))
             return self.desktop.active(self.policy)
@@ -233,11 +292,16 @@ class Executor:
                     self.store.step_status(run, i, 'success')
                     self.store.log('success', step.action)
                 except Exception as exc:
-                    status = 'cancelled' if isinstance(exc, Cancelled) else 'failed'
+                    status = 'cancelled' if isinstance(exc, Cancelled) else 'unverified' if isinstance(exc,OperationUnverified) else 'failed'
                     # Persist error type only: external exception messages can contain UI values/secrets.
                     self.store.step_status(run, i, status, type(exc).__name__)
                     self.store.log(status, step.action)
-                    error = str(exc) if isinstance(exc, (Denied, Cancelled, ValidationError, TimeoutError)) else 'Ошибка инструмента: ' + type(exc).__name__
+                    known_io = {FileExistsError:'Файл уже существует; перезапись запрещена',
+                                FileNotFoundError:'Файл или каталог отсутствует',
+                                IsADirectoryError:'Ожидался файл, но найден каталог',
+                                PermissionError:'ОС отказала в доступе к файлу'}
+                    detail = next((message for kind,message in known_io.items() if isinstance(exc,kind)),None)
+                    error = f'Шаг {i+1}: ' + (detail or (str(exc) if isinstance(exc, (Denied, Cancelled, ValidationError, TimeoutError,OperationUnverified)) else 'Ошибка инструмента: ' + type(exc).__name__))
             self.store.finish_run(run, status)
             return RunResult(run, status, outputs, error)
         finally:

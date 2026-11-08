@@ -2,6 +2,7 @@
 from typing import Protocol
 import json
 import re
+import math
 import urllib.request
 import urllib.error
 from urllib.parse import urlsplit
@@ -17,12 +18,18 @@ class ProviderConnectionError(RuntimeError):
     """Sanitized transport error; safe to show in the application UI."""
 
 
+class UnrecognizedCommand(ValidationError):
+    pass
+
+
 class AIProvider(Protocol):
     def plan(self, text: str) -> Plan: ...
 
 
 class RuleBasedProvider:
-    def plan(self, text):
+    def plan(self, text, cancellation=None):
+        if cancellation:
+            cancellation.check()
         normalized = text.strip().casefold().rstrip('.!?')
         commands = {
             'открой блокнот': ('open_app', {'app_id': 'notepad'}),
@@ -40,7 +47,17 @@ class RuleBasedProvider:
         match = re.fullmatch(r'создай папку "([^"]+)" в "([^"]+)"', text.strip(), re.IGNORECASE)
         if match:
             return Plan([Step('create_folder', {'parent': match[2], 'name': match[1]})], 'Создание папки')
-        raise ValidationError('Офлайн-команда не распознана. Примеры: «Открой Блокнот», «Покажи мои навыки», «Создай папку "Имя" в "C:\\Путь"».')
+        patterns = [
+            (r'открой приложение "([^"\n]+)"','open_app',('app_id',)),
+            (r'прочитай файл "([^"\n]+)"','read_text_file',('path',)),
+            (r'создай файл "([^"\n]+)" с текстом "(.*)"','write_text_file',('path','text')),
+            (r'скопируй файл "([^"\n]+)" в "([^"\n]+)"','copy_file',('source','target')),
+        ]
+        for pattern,action,keys in patterns:
+            match=re.fullmatch(pattern,text.strip(),re.IGNORECASE)
+            if match:
+                return Plan([Step(action,dict(zip(keys,match.groups())))],text[:160])
+        raise UnrecognizedCommand('Офлайн-команда не распознана. Примеры: «Открой Блокнот», «Покажи мои навыки», «Создай папку "Имя" в "C:\\Путь"».')
 
 
 PROMPT = '''Ты планировщик Windows. Верни только JSON {"name":"...","steps":[{"action":"...","args":{...}}]}.
@@ -55,7 +72,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def request_json(url, payload, timeout, headers=None):
-    request = urllib.request.Request(url, data=json.dumps(payload).encode(),
+    request = urllib.request.Request(url, data=None if payload is None else json.dumps(payload).encode(),
                                      headers={'Content-Type': 'application/json', **(headers or {})})
     try:
         with urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout) as response:
@@ -74,18 +91,27 @@ def request_json(url, payload, timeout, headers=None):
             'Провайдер недоступен: нет соединения или истёк тайм-аут. '
             'Проверьте Ollama и загруженную модель.'
         ) from exc
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ValidationError('Провайдер вернул некорректный JSON') from exc
 
 
 class OllamaProvider:
     def __init__(self, model=DEFAULT_OLLAMA_MODEL, endpoint='http://127.0.0.1:11434', timeout=90):
         parts = urlsplit(endpoint)
-        if parts.scheme != 'http' or parts.hostname not in ('localhost', '127.0.0.1', '::1') or parts.username:
+        if (parts.scheme != 'http' or parts.hostname not in ('localhost', '127.0.0.1', '::1')
+                or parts.username or parts.password or parts.path not in ('','/') or parts.query or parts.fragment):
             raise Denied('Ollama разрешена только на loopback HTTP')
+        if not isinstance(model,str) or not re.fullmatch(r'[A-Za-z0-9_.:/-]{1,128}',model):
+            raise ValidationError('Укажите корректное имя модели Ollama')
+        if type(timeout) not in (int,float) or not math.isfinite(timeout) or not .05 <= timeout <= 90:
+            raise ValidationError('Таймаут Ollama должен быть от 0.05 до 90 секунд')
         self.model, self.endpoint, self.timeout = model, endpoint.rstrip('/'), timeout
 
-    def plan(self, text):
+    def plan(self, text, cancellation=None):
+        if not isinstance(text,str) or not text.strip() or len(text)>2000 or '\x00' in text:
+            raise ValidationError('Команда для Ollama должна содержать от 1 до 2000 символов')
+        if cancellation is not None:
+            return self._isolated('plan', text, cancellation)
         data = request_json(self.endpoint + '/api/chat', {
             'model': self.model, 'stream': False, 'format': 'json',
             'messages': [{'role': 'system', 'content': PROMPT}, {'role': 'user', 'content': text}],
@@ -98,6 +124,65 @@ class OllamaProvider:
             raise ValidationError('Некорректный ответ Ollama') from exc
 
 
+    def status(self, cancellation=None):
+        if cancellation is not None:
+            return self._isolated('status', '', cancellation)
+        data = request_json(self.endpoint + '/api/tags', None, min(self.timeout,5))
+        if not isinstance(data,dict) or not isinstance(data.get('models'),list):
+            raise ValidationError('Ollama вернула некорректный список моделей')
+        installed = any(isinstance(m,dict) and m.get('name',m.get('model'))==self.model for m in data['models'])
+        return {'connected':True,'installed':installed,'model':self.model,
+                'message':'Ollama доступна, модель установлена' if installed else 'Ollama доступна, выбранная модель не установлена'}
+
+    def _isolated(self, method, text, cancellation):
+        # Kill a stalled inference process on STOP; no lingering blocked GUI worker.
+        from .isolation import IsolatedChannel
+        channel = IsolatedChannel(_ollama_service, timeout=self.timeout+2)
+        try:
+            status, value = channel.call((method,text,self.model,self.endpoint,self.timeout), cancellation)
+            if status=='ok':
+                return Plan.from_dict(value) if method=='plan' else value
+            errors={'ValidationError':ValidationError,'Denied':Denied,'ProviderConnectionError':ProviderConnectionError}
+            error_type,message=value
+            raise errors.get(error_type,ProviderConnectionError)(message)
+        finally:
+            channel.close()
+
+
+def _ollama_service(connection):
+    """Data-only worker; no registry, OS control, vault or document context."""
+    try:
+        method,text,model,endpoint,timeout=connection.recv()
+        provider=OllamaProvider(model,endpoint,timeout)
+        if method=='plan':
+            value=provider.plan(text).to_dict()
+        elif method=='status':
+            value=provider.status()
+        else:
+            raise ValidationError('Неизвестная операция локального ИИ')
+        connection.send(('ok',value))
+    except Exception as exc:
+        known=isinstance(exc,(ValidationError,Denied,ProviderConnectionError))
+        connection.send(('error',(type(exc).__name__,str(exc) if known else 'Локальный ИИ не смог подготовить корректный ответ')))
+    finally:
+        connection.close()
+
+
+class HybridProvider:
+    """Known rules always work; one inference request only for unknown commands."""
+    def __init__(self, local):
+        self.local=local
+
+    def plan(self, text, cancellation=None):
+        try:
+            return RuleBasedProvider().plan(text,cancellation=cancellation)
+        except UnrecognizedCommand:
+            return self.local.plan(text,cancellation=cancellation)
+
+    def status(self,cancellation=None):
+        return self.local.status(cancellation=cancellation)
+
+
 class CloudProvider:
     def __init__(self, policy, vault, endpoint, model, enabled=False, timeout=30):
         p = urlsplit(endpoint)
@@ -106,7 +191,9 @@ class CloudProvider:
         self.policy, self.vault = policy, vault
         self.endpoint, self.model, self.enabled, self.timeout = endpoint, model, enabled, timeout
 
-    def plan(self, text):
+    def plan(self, text, cancellation=None):
+        if cancellation:
+            cancellation.check()
         if not self.enabled or not self.policy.network:
             raise Denied('Облачный ИИ выключен или нет разрешения network')
         # No screen, history, document contents or UI tree are sent automatically.
@@ -114,6 +201,8 @@ class CloudProvider:
             {'role': 'system', 'content': PROMPT}, {'role': 'user', 'content': text}],
             'response_format': {'type': 'json_object'}}, self.timeout,
             {'Authorization': 'Bearer ' + self.vault.load()})
+        if cancellation:
+            cancellation.check()
         try:
             return Plan.from_json(data['choices'][0]['message']['content'])
         except (KeyError, IndexError, TypeError) as exc:
