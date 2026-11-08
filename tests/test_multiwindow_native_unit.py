@@ -495,3 +495,28 @@ def test_sample_transition_spanning_pause_is_not_recorded():
     assert recorder.steps == []
     recorder.capture('toggle',selector,'on',timestamp=22.0,observation_start=21.0)
     assert recorder.steps[-1].action == 'uia_toggle'
+
+
+def test_sample_interval_includes_time_spent_in_current_provider_read(monkeypatch):
+    from bender_ai.learning import Recorder
+    clock = [20.0]
+    class Pattern:
+        @property
+        def CurrentToggleState(self):
+            if clock[0] == 30.0:
+                clock[0] = 60.0  # User changed state inside pause 40..50 while COM was stalled.
+                return 1
+            return 0
+    item = SimpleNamespace(element_info=SimpleNamespace(control_type='CheckBox',automation_id='x',element=Raw()),
+                           iface_toggle=Pattern())
+    monkeypatch.setattr(windows.time,'perf_counter',lambda:clock[0])
+    sampler = windows._ScopedStateSampler([(10,item)])
+    assert sampler.changes(10) == []
+    clock[0] = 30.0
+    assert sampler.changes(10) == [(item,'toggle',1)]
+    assert sampler.observation_end[id(item)] == 60.0
+    recorder = Recorder('a.exe','A');recorder.start();recorder.started_at=1.0
+    recorder.pause_intervals = [(40.0,50.0)]
+    recorder.capture('toggle',Selector('a.exe','A','x','CheckBox'),'on',
+                     timestamp=sampler.observation_end[id(item)],observation_start=sampler.observation_start[id(item)])
+    assert recorder.steps == []

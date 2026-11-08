@@ -810,6 +810,7 @@ class _ScopedStateSampler:
     def __init__(self, entries, validate=None):
         self.validate = validate
         self.observation_start = {}
+        self.observation_end = {}
         self.observed_at = {}
         self.entries = list(entries)[:1000]
         self.previous = {}
@@ -850,12 +851,13 @@ class _ScopedStateSampler:
     def changes(self, foreground):
         changed = []
         same_window = foreground == self.foreground
-        timestamp = time.perf_counter()
         self.observation_start = {}
+        self.observation_end = {}
         for index, (handle, item) in enumerate(self.entries):
             if handle != foreground:
                 self.previous.pop(index, None)
                 continue
+            read_started = time.perf_counter()
             try:
                 if self.validate:
                     self.validate(handle, item)
@@ -865,8 +867,9 @@ class _ScopedStateSampler:
             old = self.previous.get(index)
             if state is not None and old is not None and same_window and state != old:
                 self.observation_start[id(item)] = self.observed_at[index]
+                self.observation_end[id(item)] = time.perf_counter()
                 changed.append((item, *state))
-            self.observed_at[index] = timestamp
+            self.observed_at[index] = read_started
             self.previous[index] = state
         self.foreground = foreground
         return changed
@@ -1033,7 +1036,7 @@ def _record_events(connection, windows, policy_data, literal_text):
                     active = None
                 for item, kind, value in sampler.changes(foreground):
                     diagnostic('state_snapshot')
-                    emit(kind, item.element_info.element, value, timestamp=timestamp,
+                    emit(kind, item.element_info.element, value, timestamp=sampler.observation_end[id(item)],
                          observation_start=sampler.observation_start[id(item)])
     except Exception as exc:
         try:
