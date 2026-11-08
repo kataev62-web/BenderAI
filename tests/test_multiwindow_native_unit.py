@@ -426,3 +426,49 @@ def test_toggle_can_advance_tristate_only_after_verified_progress(state_adapter)
     element = SimpleNamespace(element_info=SimpleNamespace(name='Safe'),is_enabled=lambda:True,iface_toggle=pattern)
     state_adapter(element).toggle(Selector('a.exe','A','check','CheckBox'),'on')
     assert pattern.calls == 2 and pattern.CurrentToggleState == 1
+
+
+def test_scoped_state_sampler_detects_radio_without_notification_and_coalesces():
+    element = SimpleNamespace(element_info=SimpleNamespace(control_type='RadioButton', automation_id='r', element=Raw()),
+                              iface_selection_item=SimpleNamespace(CurrentIsSelected=0),
+                              iface_toggle=SimpleNamespace(CurrentToggleState=0))
+    sampler = windows._ScopedStateSampler([(10, element)])
+    assert sampler.changes(10) == []
+    element.iface_toggle.CurrentToggleState = 1
+    assert sampler.changes(10) == [(element, 'selection_state', 1)]
+    assert sampler.changes(10) == []
+    element.iface_toggle.CurrentToggleState = 0
+    assert sampler.changes(10) == [(element, 'selection_state', 0)]
+
+
+def test_scoped_state_sampler_excludes_password_text_and_background_changes():
+    class Secret:
+        element_info = SimpleNamespace(control_type='Edit', automation_id='secret', element=Raw())
+        @property
+        def iface_value(self): raise AssertionError('Text must never be polled')
+    check = SimpleNamespace(element_info=SimpleNamespace(control_type='CheckBox', automation_id='c', element=Raw()),
+                            iface_toggle=SimpleNamespace(CurrentToggleState=0))
+    sampler = windows._ScopedStateSampler([(10, check), (10, Secret())])
+    assert sampler.changes(10) == []
+    assert sampler.changes(20) == []
+    check.iface_toggle.CurrentToggleState = 1
+    assert sampler.changes(10) == []  # Re-entry establishes a fresh baseline.
+    check.iface_toggle.CurrentToggleState = 0
+    assert sampler.changes(10) == [(check, 'toggle', 0)]
+    check.element_info.element.CurrentIsPassword = True
+    check.iface_toggle.CurrentToggleState = 1
+    assert sampler.changes(10) == []
+
+
+def test_scoped_state_sampler_rejects_unknown_and_unsupported_pattern_states():
+    element = SimpleNamespace(element_info=SimpleNamespace(control_type='ComboBox', automation_id='x', element=Raw()),
+                              iface_expand_collapse=SimpleNamespace(CurrentExpandCollapseState=0))
+    sampler = windows._ScopedStateSampler([(10, element)])
+    assert sampler.changes(10) == []
+    element.iface_expand_collapse.CurrentExpandCollapseState = 1
+    assert sampler.changes(10) == [(element, 'expand', 1)]
+    element.iface_expand_collapse.CurrentExpandCollapseState = 2
+    assert sampler.changes(10) == []
+    element.element_info.element.CurrentIsPassword = None
+    element.iface_expand_collapse.CurrentExpandCollapseState = 0
+    assert sampler.changes(10) == []

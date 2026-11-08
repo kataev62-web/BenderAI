@@ -799,6 +799,67 @@ def _state_metadata(kind, raw):
             'scalar_type': scalar_type}
 
 
+class _ScopedStateSampler:
+    """Observe only non-text pattern transitions in inventoried approved roots.
+
+    Some native providers change state without raising UIA notifications. Sampling
+    cannot preserve transitions faster than the interval; the editor warns of this.
+    Foreground re-entry resets the baseline rather than recording background work.
+    Every emitted transition still passes the normal live selector/policy checks.
+    """
+    def __init__(self, entries):
+        self.entries = list(entries)[:1000]
+        self.previous = {}
+        self.foreground = None
+
+    @staticmethod
+    def state(item):
+        try:
+            info = item.element_info
+            if not safe_raw_element(info.element) or not info.automation_id:
+                return None
+            kind = info.control_type
+            if kind == 'CheckBox':
+                operation, value = 'toggle', item.iface_toggle.CurrentToggleState
+            elif kind == 'RadioButton':
+                # Win32's SelectionItem state can lag behind its checked state.
+                pattern = item.iface_selection_item
+                value = pattern.CurrentIsSelected
+                try:
+                    checked = item.iface_toggle.CurrentToggleState
+                    if type(checked) is int and checked in (0, 1):
+                        value = checked
+                except Exception:
+                    pass
+                operation = 'selection_state'
+            elif kind in ('ComboBox', 'TreeItem'):
+                operation, value = 'expand', item.iface_expand_collapse.CurrentExpandCollapseState
+            elif kind == 'ListItem':
+                operation, value = 'selection_state', item.iface_selection_item.CurrentIsSelected
+            else:
+                return None  # Never read text, password values, or invoke controls.
+            if type(value) not in (int, bool) or value not in (0, 1):
+                return None
+            return operation, int(value)
+        except Exception:
+            return None
+
+    def changes(self, foreground):
+        changed = []
+        same_window = foreground == self.foreground
+        for index, (handle, item) in enumerate(self.entries):
+            if handle != foreground:
+                self.previous.pop(index, None)
+                continue
+            state = self.state(item)
+            old = self.previous.get(index)
+            if state is not None and old is not None and same_window and state != old:
+                changed.append((item, *state))
+            self.previous[index] = state
+        self.foreground = foreground
+        return changed
+
+
 def _record_events(connection, windows, policy_data, literal_text):
     """One bounded child, selected-root subscriptions, no global input hooks."""
     import threading
@@ -916,10 +977,13 @@ def _record_events(connection, windows, policy_data, literal_text):
                 return 0
         events, properties_handler = EventHandler(), PropertyHandler()
         properties = (ctypes.c_int * 4)(30045,30086,30070,30079)
+        sampled_controls = []
         for app,title,root in roots:
             validate(app,title,root)
             # Inventory only selected approved trees, with fixed diagnostics and no text.
             for item in root.descendants()[:1000]:
+                if item.element_info.control_type in ('CheckBox', 'RadioButton', 'ComboBox', 'TreeItem', 'ListItem'):
+                    sampled_controls.append((root.handle, item))
                 reason = _inventory_reason(item)
                 if reason:
                     diagnostic(reason)
@@ -929,6 +993,8 @@ def _record_events(connection, windows, policy_data, literal_text):
                 subscriptions.append(('event',event_id,element))
             api.iuia.AddPropertyChangedEventHandlerNativeArray(element,api.tree_scope['subtree'],None,properties_handler,properties,4)
             subscriptions.append(('property',None,element))
+        sampler = _ScopedStateSampler(sampled_controls)
+        sampler.changes(win32gui.GetForegroundWindow())
         connection.send(('ready',))
         while not connection.poll(.05):
             timestamp = time.perf_counter()
@@ -942,6 +1008,9 @@ def _record_events(connection, windows, policy_data, literal_text):
                         send_focus(app,title,root,timestamp)
                 if not any(root.handle == foreground for _,_,root in roots):
                     active = None
+                for item, kind, value in sampler.changes(foreground):
+                    diagnostic('state_snapshot')
+                    emit(kind, item.element_info.element, value, timestamp=timestamp)
     except Exception as exc:
         try:
             connection.send(('error','Запись UIA недоступна: '+type(exc).__name__
