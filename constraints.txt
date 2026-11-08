@@ -26,5 +26,17 @@ more-itertools==11.2.1
 SecretStorage==3.5.0; sys_platform == 'linux'
 jeepney==0.9.0; sys_platform == 'linux'
 cryptography==50.0.2; sys_platform == 'linux'
-cffi==2.1.1; sys_platform == 'linux'
-pycparser==3.12; sys_platform == 'linux'
+cffi==2.1.1
+pycparser==3.12
+
+# Optional local voice input runtime (no bundled/downloaded speech model).
+vosk==0.3.45
+sounddevice==0.5.2
+srt==3.5.3
+requests==2.34.2
+tqdm==4.70.1
+websockets==17.4
+certifi==2026.10.23
+charset_normalizer==3.5.2
+idna==3.20
+urllib3==2.8.0

@@ -7,6 +7,12 @@ import traceback
 
 
 def run():
+    if '--feature-smoke-report' in sys.argv:
+        index = sys.argv.index('--feature-smoke-report')
+        if index + 1 >= len(sys.argv) or sys.argv[index+1].startswith('--'):
+            return 2
+        from .feature_smoke import run as probe_features
+        return probe_features(sys.argv[index+1])
     smoke = '--smoke-test' in sys.argv
     report_path = None
     if smoke and '--smoke-report' in sys.argv:

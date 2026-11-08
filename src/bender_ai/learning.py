@@ -5,6 +5,7 @@ from .models import Plan, Step, Selector, ValidationError
 from .security import check_private_title
 
 DIAGNOSTICS = {
+    'explorer_review':'Изменение папки замечено, но его источник не установлен или наблюдение пересекло паузу. Проверьте и подтвердите шаг вручную.',
     'state_snapshot':'UIA не передала пригодное состояние события; записано проверенное текущее состояние контрола. Проверьте порядок шагов.',
     'unsupported_control': 'Контрол не предоставляет поддерживаемое UIA-действие; действие не записано.',
     'unsupported_pattern': 'Нужный UIA Pattern недоступен; требуется отдельный адаптер.',

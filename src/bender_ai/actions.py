@@ -40,9 +40,10 @@ class RunResult:
 
 
 class ActionRegistry:
-    def __init__(self, policy, store, ui=None, desktop=None):
+    def __init__(self, policy, store, ui=None, desktop=None, explorer=None):
         self.policy, self.store = policy, store
         self.ui, self.desktop = ui, desktop
+        self.explorer = explorer or getattr(getattr(desktop, 'bridge', None), 'explorer', None)
         self.apps = {'notepad': 'notepad.exe', 'calculator': 'calc.exe', 'explorer': 'explorer.exe'}
 
     def folder(self, raw):
@@ -64,6 +65,11 @@ class ActionRegistry:
             self.policy.app(selector.app, control=action in MUTATING)
         if action == 'open_app' and args['app_id'] not in self.apps:
             self.policy.approved_launch(args['app_id'])
+        if action == 'explorer_navigate':
+            selector = Selector.from_dict(args['selector'])
+            if selector.app.casefold() != 'explorer.exe' or selector.control_type != 'Window':
+                raise Denied('Нужен точный селектор окна Проводника')
+            self.policy.path(args['path'], 'read')
         if action in ('open_folder', 'list_folder'):
             self.policy.path(self.folder(args['path']), 'read')
         if action in ('read_text_file','write_text_file'):
@@ -104,6 +110,12 @@ class ActionRegistry:
             self.desktop.cancellation = cancel
         self.validate(step)
         a, p = step.action, step.args
+        if a == 'explorer_navigate':
+            if self.explorer is None:
+                raise Denied('Адаптер Проводника недоступен')
+            if hasattr(type(self.explorer), '__getattr__'):
+                self.explorer.cancellation = cancel
+            return self.explorer.navigate(p['selector'], p['path'])
         if a == 'stop':
             cancel.event.set()
             cancel.check()
@@ -305,7 +317,7 @@ class Executor:
             self.store.finish_run(run, status)
             return RunResult(run, status, outputs, error)
         finally:
-            for adapter in (self.registry.ui, self.registry.desktop):
+            for adapter in (self.registry.ui, self.registry.desktop, self.registry.explorer):
                 if adapter is not None and hasattr(type(adapter), '__getattr__'):
                     adapter.cancellation = None
             self.cancel = None

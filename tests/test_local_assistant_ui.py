@@ -44,6 +44,7 @@ def test_planning_passes_token_and_stop_cancels(window, qt, monkeypatch):
         cancellation.event.wait(1)
         return Plan([Step('list_skills')])
     monkeypatch.setattr(window, 'provider', lambda: SimpleNamespace(plan=plan))
+    window.message_mode.setCurrentIndex(window.message_mode.findData('command'))
     window.input.setText('Неизвестная задача')
     window.send()
     end = time.monotonic() + 1

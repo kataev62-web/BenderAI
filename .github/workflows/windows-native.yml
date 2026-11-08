@@ -27,7 +27,7 @@ jobs:
           architecture: x64
           cache: pip
       - name: Install locked dependencies
-        run: python -m pip install -c constraints.txt -e ".[dev]"
+        run: python -m pip install -c constraints.txt -e ".[dev,voice]"
       - name: Native form learning, replay and Windows permission boundary
         run: python -m pytest -m windows -v --junitxml=native-results.xml
       - name: Publish native diagnostics

@@ -26,6 +26,26 @@ class AIProvider(Protocol):
     def plan(self, text: str) -> Plan: ...
 
 
+def classify_message(text):
+    """Choose a UI mode, never grant authority or execute inferred intent."""
+    if not isinstance(text, str) or not text.strip() or len(text) > 2000 or '\x00' in text:
+        raise ValidationError('Сообщение должно содержать от 1 до 2000 символов')
+    normalized = text.strip().casefold()
+    try:
+        RuleBasedProvider().plan(text)
+        return 'command'
+    except UnrecognizedCommand:
+        pass
+    # Explain/how-to questions remain conversation even when they mention an action.
+    if re.match(r'^(как(?:ой|ая|ое|ие)? |где |кто |почему |зачем |когда |что |расскажи|объясни|привет|здравствуй|добрый|спасибо)', normalized):
+        return 'chat'
+    if re.match(r'^(?:бендер[, ]+)?(?:открой|создай|скопируй|прочитай|покажи|выполни|запусти|перейди|остановись|стоп)\b', normalized):
+        return 'command'
+    if normalized.endswith('?'):
+        return 'chat'
+    return 'ambiguous'
+
+
 class RuleBasedProvider:
     def plan(self, text, cancellation=None):
         if cancellation:
@@ -47,6 +67,13 @@ class RuleBasedProvider:
         match = re.fullmatch(r'создай папку "([^"]+)" в "([^"]+)"', text.strip(), re.IGNORECASE)
         if match:
             return Plan([Step('create_folder', {'parent': match[2], 'name': match[1]})], 'Создание папки')
+        drive = re.fullmatch(r'открой диск ([a-z])[:\\]?', text.strip(), re.IGNORECASE)
+        if drive:
+            return Plan([Step('open_folder', {'path': drive[1].upper()+':\\'})], 'Открыть диск')
+        folder = re.fullmatch(r'открой папку (.+)', text.strip(), re.IGNORECASE)
+        if folder:
+            path = folder[1].strip().strip(chr(34))
+            return Plan([Step('open_folder', {'path': path})], 'Открыть папку')
         patterns = [
             (r'открой приложение "([^"\n]+)"','open_app',('app_id',)),
             (r'прочитай файл "([^"\n]+)"','read_text_file',('path',)),
@@ -155,6 +182,9 @@ class OllamaProvider:
         if not isinstance(answer, str) or not answer.strip():
             raise ValidationError('Локальная модель не вернула текст ответа')
         return answer.strip()[:3000]
+
+    def converse_cancelable(self, text, cancellation):
+        return self.converse(text, cancellation=cancellation)
 
     def status(self, cancellation=None):
         if cancellation is not None:

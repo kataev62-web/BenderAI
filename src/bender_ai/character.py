@@ -55,12 +55,24 @@ class CharacterPack:
 class Character(QWidget):
     activated = Signal()
 
+    @property
+    def pack(self):
+        return getattr(self, '_pack', None)
+
+    @pack.setter
+    def pack(self, value):
+        self._pack = value
+        self._pack_mask_key = None
+        self.apply_mask()
+        self.update()
+
     def __init__(self):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.resize(116, 146)
         self.state, self.pack = 'idle', None
         self.dnd, self.pinned, self.animate = False, False, True
+        self.topmost = True
         self.speed = 30
         self.direction, self.phase, self._x = 1, 0., 100.
         self.drag_origin, self.moved = None, False
@@ -84,6 +96,19 @@ class Character(QWidget):
         self.ensure_visible()
 
     def apply_mask(self):
+        if self.pack:
+            # Imported silhouettes can extend beyond the built-in robot's mask.
+            # Keep PNG proportions and transparent pixels click-through.
+            frames = self.pack.animations[self.state]
+            index = int(self.phase*8) % len(frames)
+            key = (id(self.pack), self.state, index, self.width(), self.height())
+            if getattr(self, '_pack_mask_key', None) == key:
+                return
+            pixmap = self.pack_frame()
+            self.setMask(QRegion(pixmap.mask()).translated(
+                (self.width()-pixmap.width())//2, (self.height()-pixmap.height())//2))
+            self._pack_mask_key = key
+            return
         # Minimal silhouette mask leaves empty surrounding desktop clickable.
         w, h = self.width(), self.height()
         self.setMask(QRegion(int(w*.14), int(h*.15), int(w*.72), int(h*.68), QRegion.RegionType.Ellipse)
@@ -94,6 +119,19 @@ class Character(QWidget):
         self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, enabled)
         self.state = 'sleep' if enabled else 'idle'
         self.show()
+
+    def set_topmost(self, enabled):
+        self.topmost = bool(enabled)
+        visible = self.isVisible()
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self.topmost)
+        if visible:
+            self.show()
+
+    def pack_frame(self):
+        frames = self.pack.animations[self.state]
+        return frames[int(self.phase*8) % len(frames)].scaled(
+            max(1, round(self.width()*100/116)), max(1, round(self.height()*132/146)),
+            Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
 
     def ensure_visible(self, *_):
         screens = [s.availableGeometry() for s in QApplication.screens()]
@@ -116,16 +154,17 @@ class Character(QWidget):
                     self._x = float(x)
                 self.move(x, y)
                 self.state = 'walk' if old_x != x else 'idle'
+        self.apply_mask()
         self.update()
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.scale(self.width()/116, self.height()/146)
         if self.pack:
-            frames = self.pack.animations[self.state]
-            p.drawPixmap(QRect(8, 8, 100, 132), frames[int(self.phase*8) % len(frames)])
+            pixmap = self.pack_frame()
+            p.drawPixmap((self.width()-pixmap.width())//2, (self.height()-pixmap.height())//2, pixmap)
             return
+        p.scale(self.width()/116, self.height()/146)
         colors = {'idle': '#7de2d1', 'walk': '#7de2d1', 'thinking': '#beadff', 'talk': '#84bcff',
                   'working': '#ffd27d', 'success': '#85f29e', 'error': '#ff8a95', 'sleep': '#76849b'}
         color = QColor(colors.get(self.state, '#7de2d1'))

@@ -59,7 +59,7 @@ class Selector:
 
 
 SCHEMAS = {
-    'open_app': ('app_id',), 'open_folder': ('path',), 'get_active_window': (),
+    'explorer_navigate': ('selector', 'path'), 'open_app': ('app_id',), 'open_folder': ('path',), 'get_active_window': (),
     'list_folder': ('path',), 'create_folder': ('parent', 'name'),
     'read_text_file': ('path',), 'write_text_file': ('path', 'text'), 'copy_file': ('source', 'target'),
     'focus_window': ('selector',), 'wait_for_window': ('selector', 'timeout'),
@@ -69,7 +69,7 @@ SCHEMAS = {
     'assert_element': ('selector', 'expected_state'),
     'launch_approved_gradle_task': ('project_path', 'task'), 'list_skills': (), 'stop': (),
 }
-MUTATING = {'open_app', 'open_folder', 'write_text_file', 'copy_file', 'create_folder', 'uia_click', 'uia_set_text', 'uia_select', 'uia_toggle', 'uia_expand', 'focus_window', 'launch_approved_gradle_task'}
+MUTATING = {'explorer_navigate', 'open_app', 'open_folder', 'write_text_file', 'copy_file', 'create_folder', 'uia_click', 'uia_set_text', 'uia_select', 'uia_toggle', 'uia_expand', 'focus_window', 'launch_approved_gradle_task'}
 
 
 @dataclass

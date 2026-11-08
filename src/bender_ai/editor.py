@@ -7,7 +7,7 @@ from .models import Plan, Step, SCHEMAS
 from .infrastructure import install_russian_ui
 from PySide6.QtWidgets import QApplication
 
-LABELS = {'read_text_file':'Прочитать текстовый файл','write_text_file':'Создать текстовый файл',
+LABELS = {'explorer_navigate':'Перейти в папку выбранного окна Проводника', 'read_text_file':'Прочитать текстовый файл','write_text_file':'Создать текстовый файл',
           'copy_file':'Скопировать файл','uia_select': 'Выбрать элемент', 'uia_toggle': 'Переключить (on/off)',
           'uia_expand': 'Раскрыть / свернуть', 'wait_for_window': 'Ждать окно', 'uia_click': 'Нажать кнопку', 'uia_set_text': 'Ввести текст', 'wait_for_element': 'Ждать элемент',
           'assert_element': 'Проверить элемент', 'open_app': 'Открыть приложение', 'open_folder': 'Открыть папку',

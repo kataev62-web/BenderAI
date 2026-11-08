@@ -21,7 +21,7 @@ jobs:
           architecture: x64
           cache: pip
       - name: Install
-        run: python -m pip install -c constraints.txt -e ".[dev]"
+        run: python -m pip install -c constraints.txt -e ".[dev,voice]"
       - name: Compile and validate dependencies
         run: |
           python -m compileall -q src tests
@@ -98,5 +98,6 @@ jobs:
             build/native-results.xml
             build/native-preflight.xml
             build/packaged-smoke.json
+            build/packaged-features.json
             build/launch-report.json
             build/launch-preflight.json

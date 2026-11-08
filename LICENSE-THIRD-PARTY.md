@@ -13,6 +13,9 @@ Principal dependencies (versions are constrained in `constraints.txt`):
 | comtypes 1.4.10 | MIT | COM bindings |
 | keyring 25.6.0 | MIT | Windows Credential Manager |
 | six, pywin32-ctypes, jaraco.*, more-itertools | MIT and upstream notices | Dependency utilities |
+| Vosk 0.3.45 | Apache-2.0; see bundled native notices | Optional local speech recognition runtime; no model weights |
+| sounddevice 0.5.2 / PortAudio | MIT / upstream PortAudio notices | Explicit push-to-talk audio input |
+| requests, urllib3, certifi, charset-normalizer, idna, tqdm, websockets, srt | Upstream Apache/MIT/BSD/MPL notices | Vosk dependencies; no automatic model download |
 | pytest | MIT | Development/testing |
 | PyInstaller | GPL-2.0-or-later with bootloader exception | Packaging; exception permits proprietary bundled applications |
 | pyinstaller-hooks-contrib | Apache-2.0 / GPL-2.0 with exceptions, see files | Packaging hooks |
@@ -27,3 +30,5 @@ Only Qt modules used by this application should be packaged. Do not introduce GP
 Upstream references: https://github.com/pywinauto/pywinauto, https://github.com/mhammond/pywin32, https://github.com/enthought/comtypes, https://github.com/jaraco/keyring, https://pyinstaller.org/.
 
 No third-party model weights are shipped. Ollama models and cloud services have their own terms, selected and installed by the user. Local character packs are user-controlled data; ensure appropriate rights before redistributing them.
+
+Vosk acoustic models have separate per-model licenses; the user selects a local model and must review its model card. No model is redistributed. Windows SAPI voices are installed system components governed by their own terms. Blender is an optional separately installed external tool (GPL); no Blender binary is redistributed in this ZIP. User GLB assets are local-only and require appropriate rights.
