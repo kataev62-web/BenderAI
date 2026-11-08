@@ -141,7 +141,7 @@ class OllamaProvider:
 
     def converse(self, text, cancellation=None):
         """Natural conversation only. No action registry or executable tool calls."""
-        if not isinstance(text, str) or not text.strip() or len(text) > 2000 or "\\x00" in text:
+        if not isinstance(text, str) or not text.strip() or len(text) > 2000 or "\x00" in text:
             raise ValidationError('Сообщение должно содержать от 1 до 2000 символов')
         if cancellation is not None:
             return self._isolated('converse', text, cancellation)
