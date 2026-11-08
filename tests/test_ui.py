@@ -77,3 +77,18 @@ def test_chat_workers_execute_once_and_keep_gui_responsive(qt, tmp_path):
     assert len(store.runs()) == 1
     assert store.runs()[0]['status'] == 'success'
     window.shutdown()
+
+
+def test_ollama_mode_uses_offline_shortcuts_without_model_request(qt, tmp_path):
+    store = Store(tmp_path / 'shortcut-db')
+    store.set_setting('ai', {'provider': 'ollama', 'model': 'qwen2.5-coder:3b'})
+    window = MainWindow(store, test_mode=True)
+    try:
+        window.input.setText('Открой калькулятор')
+        window.send()
+        assert window.task is None
+        assert window.pending is not None
+        assert window.pending.steps[0].action == 'open_app'
+        assert window.pending.steps[0].args == {'app_id': 'calculator'}
+    finally:
+        window.shutdown()

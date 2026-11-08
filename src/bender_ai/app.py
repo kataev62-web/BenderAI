@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
     QMenu, QMessageBox, QFileDialog, QInputDialog, QDialog, QFormLayout, QCheckBox,
     QComboBox, QSpinBox, QDialogButtonBox, QPlainTextEdit)
 from .actions import ActionRegistry, Executor, Cancellation
-from .brain import RuleBasedProvider, OllamaProvider, CloudProvider
+from .brain import RuleBasedProvider, OllamaProvider, CloudProvider, DEFAULT_OLLAMA_MODEL
 from .character import Character, CharacterPack
 from .editor import SkillEditor
 from .infrastructure import Task, CaptureTask, EmergencyHotkey, data_dir, autostart
@@ -232,7 +232,7 @@ class MainWindow(QMainWindow):
         config = self.store.setting('ai', {})
         kind = config.get('provider', 'offline')
         if kind == 'ollama':
-            return OllamaProvider(config.get('model', 'qwen2.5:7b'))
+            return OllamaProvider(config.get('model') or DEFAULT_OLLAMA_MODEL)
         if kind == 'cloud':
             return CloudProvider(self.policy, SecretVault(), config.get('endpoint', ''), config.get('model', ''), enabled=True)
         return RuleBasedProvider()
@@ -251,6 +251,16 @@ class MainWindow(QMainWindow):
         self.validation_target = None
         self.message('Вы', text)
         try:
+            # Deterministic offline commands cost zero tokens even when Ollama is selected.
+            # They still become plans and require the normal permission checks.
+            if self.store.setting('ai', {}).get('provider', 'offline') != 'offline':
+                try:
+                    shortcut = RuleBasedProvider().plan(text)
+                except ValidationError:
+                    pass
+                else:
+                    self.accept_plan(shortcut)
+                    return
             provider = self.provider()
             self.start_task(lambda: provider.plan(text), self.accept_plan)
         except Exception as exc:
@@ -679,7 +689,9 @@ class MainWindow(QMainWindow):
         provider.addItems(['offline','ollama','cloud'])
         ai = self.store.setting('ai', {})
         provider.setCurrentText(ai.get('provider','offline'))
-        model = QLineEdit(ai.get('model','qwen2.5:7b'))
+        model = QLineEdit(ai.get('model') or DEFAULT_OLLAMA_MODEL)
+        model.setPlaceholderText('Ollama: qwen2.5-coder:3b')
+        model.setToolTip('Для локальной модели: ollama pull qwen2.5-coder:3b')
         endpoint = QLineEdit(ai.get('endpoint','https://api.openai.com/v1/chat/completions'))
         key = QLineEdit()
         key.setEchoMode(QLineEdit.EchoMode.Password)

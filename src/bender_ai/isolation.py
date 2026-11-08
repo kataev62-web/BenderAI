@@ -60,7 +60,7 @@ class IsolatedChannel:
 
 
 def windows_service(connection):
-    from .windows import WindowsUIA, WindowsDesktop
+    from .windows import WindowsUIA, WindowsDesktop, AppLaunchError
     from .models import Selector
     methods = {'ui': {'click', 'set_text', 'exists', 'assert_state', 'focus', 'windows', 'snapshot', 'clicked_selector'},
                'desktop': {'open_app', 'open_folder', 'active'}}
@@ -80,7 +80,7 @@ def windows_service(connection):
             connection.send(('ok', value))
         except Exception as exc:
             # UI errors can contain private text. Return class only, plus trusted policy errors.
-            connection.send(('error', str(exc) if isinstance(exc, Denied) else type(exc).__name__))
+            connection.send(('error', str(exc) if isinstance(exc, (Denied, AppLaunchError)) else type(exc).__name__))
 
 
 class WindowsBridge:
