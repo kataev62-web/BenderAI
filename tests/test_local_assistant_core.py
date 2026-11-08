@@ -173,3 +173,26 @@ def test_run_journal_never_persists_model_or_command_derived_plan_names(tmp_path
     assert runner.run(plan).status=='success'
     assert 'synthetic-private-command-content' not in json.dumps(store.runs())
     store.close()
+
+
+def test_local_ollama_never_sends_commands_through_environment_http_proxy(monkeypatch):
+    calls={'local':0,'proxy':0}
+    def handler(which):
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                calls[which]+=1;self.rfile.read(int(self.headers['Content-Length']))
+                self.send_response(200);self.end_headers()
+                self.wfile.write(json.dumps({'message':{'content':'{"steps":[{"action":"list_skills","args":{}}]}'}}).encode())
+            def log_message(self,*a):pass
+        return Handler
+    local=HTTPServer(('127.0.0.1',0),handler('local'));proxy=HTTPServer(('127.0.0.1',0),handler('proxy'))
+    threads=[threading.Thread(target=s.serve_forever,daemon=True) for s in (local,proxy)]
+    for t in threads:t.start()
+    for key in ('HTTP_PROXY','http_proxy'):monkeypatch.setenv(key,f'http://127.0.0.1:{proxy.server_port}')
+    for key in ('NO_PROXY','no_proxy'):monkeypatch.setenv(key,'')
+    try:
+        assert brain.OllamaProvider(endpoint=f'http://127.0.0.1:{local.server_port}').plan('private synthetic request').steps[0].action=='list_skills'
+        assert calls=={'local':1,'proxy':0}
+    finally:
+        for s in (local,proxy):s.shutdown();s.server_close()
+        for t in threads:t.join()
