@@ -2,6 +2,8 @@
 
 Set both BENDER_TRAINING_EXE and BENDER_TRAINING_PEER_EXE to exercise distinct
 packaged executables. Source runs use separate Python fixture processes.
+Radio demonstration moves the pointer in owned fixtures on an idle test desktop;
+production recording/replay keeps UIA selectors and never saves coordinates.
 """
 import ctypes
 from ctypes import wintypes
@@ -148,11 +150,14 @@ def test_multi_process_capture_save_reopen_parameterize_replay(native_windows, t
             capture.poll()
             return any(s.action == 'uia_toggle' for s in recorder.steps)
         eventually(toggle_seen, context=recording_context)
-        try:
-            bridge.ui.select(selector(1, '1008', 'RadioButton'))
-        except Exception as exc:
-            checks=[int(user.SendMessageW(user.GetDlgItem(handles[1],ident),0x00F0,0,0)) for ident in (1008,1009)]
-            raise AssertionError('Radio selection failed; actual Win32 checked states='+str(checks)+', error='+type(exc).__name__) from exc
+        from pywinauto import Desktop
+        bridge.ui.focus(selector(1, '1008', 'RadioButton'))
+        eventually(lambda: user.GetForegroundWindow() == handles[1])
+        radio_handle = user.GetDlgItem(handles[1], 1008)
+        assert radio_handle, 'Owned fixture radio control is missing'
+        # Physical input belongs only to this test driver; capture/replay use UIA selectors.
+        Desktop(backend='win32').window(handle=radio_handle).wrapper_object().click_input()
+        eventually(lambda: user.SendMessageW(radio_handle, 0x00F0, 0, 0) == 1)
         def selection_seen():
             capture.poll()
             return any(s.action == 'uia_select' and s.args['selector']['automation_id'] == '1008'
