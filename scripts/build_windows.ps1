@@ -18,6 +18,8 @@ Copy-Item build/training-dist/BenderTraining.exe dist/BenderAI/
 & $Python -m PyInstaller --noconfirm --clean --windowed --onefile --name BenderTrainingPeer --distpath build/training-dist scripts/training_entry.py
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Copy-Item build/training-dist/BenderTrainingPeer.exe dist/BenderAI/
+New-Item -ItemType Directory -Path dist/BenderAI/docs -Force | Out-Null
+Copy-Item docs/USER_GUIDE_RU.md, docs/MULTIWINDOW_LEARNING_RU.md, docs/SECURITY.md dist/BenderAI/docs/
 Copy-Item LICENSE-THIRD-PARTY.md dist/BenderAI/
 & $Python scripts/collect_licenses.py dist/BenderAI/licenses
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

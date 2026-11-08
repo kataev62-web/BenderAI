@@ -97,7 +97,7 @@ def test_multi_process_capture_save_reopen_parameterize_replay(native_windows, t
     recorder.start()
     capture = WindowsCapture(bridge.ui, recorder)
     def recording_context():
-        return {'actions':[step.action for step in recorder.steps], 'diagnostics':list(recorder.diagnostics)}
+        return {'actions':[step.action for step in recorder.steps], 'diagnostics':list(recorder.diagnostics), 'state_types':list(getattr(capture,'state_diagnostics',[]))}
     store = Store(tmp_path / 'skills.db')
     try:
         def ready():

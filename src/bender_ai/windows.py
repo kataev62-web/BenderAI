@@ -673,6 +673,49 @@ def _record_value(kind, new_value, literal_text):
             {0: 'collapsed', 1: 'expanded'})[new_value]
 
 
+def _record_state(kind, raw, resolved):
+    """Use an exact element's pattern state only when event data lacks a valid enum.
+
+    Snapshot fallback can merge rapid transitions; a fixed diagnostic requires review.
+    Explicit unsupported enum states remain unsupported, even if the current state changed.
+    """
+    try:
+        return _record_value(kind, raw, False), False
+    except Denied:
+        pass
+    scalar = raw
+    if type(scalar) not in (int, bool, float, str, type(None)):
+        try:
+            scalar = scalar.value
+        except Exception:
+            scalar = None
+    if type(scalar) in (int, float) and scalar not in (0, 1):
+        raise Denied('unsupported_state')
+    try:
+        if kind == 'toggle':
+            state = resolved.iface_toggle.CurrentToggleState
+        elif kind == 'expand':
+            state = resolved.iface_expand_collapse.CurrentExpandCollapseState
+        else:
+            raise Denied('unsupported_state')
+        return _record_value(kind, state, False), True
+    except Exception:
+        raise Denied('unsupported_state') from None
+
+
+def _state_metadata(kind, raw):
+    types = {int: 'int', bool: 'bool', float: 'float', str: 'str', type(None): 'none'}
+    scalar = raw
+    try:
+        if type(raw) not in types:
+            scalar = raw.value
+        scalar_type = types.get(type(scalar), 'wrapped')
+    except Exception:
+        scalar_type = 'unavailable'
+    return {'kind': kind, 'payload_type': types.get(type(raw), 'wrapped'),
+            'scalar_type': scalar_type}
+
+
 def _record_events(connection, windows, policy_data, literal_text):
     """One bounded child, selected-root subscriptions, no global input hooks."""
     import threading
@@ -713,8 +756,8 @@ def _record_events(connection, windows, policy_data, literal_text):
                 selector = Selector(app, title, '__window__', 'Window')
                 connection.send(('event', 'focus', selector.to_dict(), '', timestamp))
                 active = root.handle
-        def diagnostic(reason):
-            connection.send(('diagnostic', reason))
+        def diagnostic(reason, metadata=None):
+            connection.send(('diagnostic', reason) if metadata is None else ('diagnostic', reason, metadata))
         def emit(kind, sender, new_value='', timestamp=None):
             nonlocal failed
             # Preserve callback arrival time across lock contention and slow COM reads.
@@ -759,9 +802,14 @@ def _record_events(connection, windows, policy_data, literal_text):
                         diagnostic('ambiguous_selector')
                         return
                     try:
-                        value = _record_value(kind, new_value, literal_text)
+                        if kind in ('toggle', 'expand'):
+                            value, snapshot = _record_state(kind, new_value, resolved)
+                            if snapshot:
+                                diagnostic('state_snapshot', _state_metadata(kind, new_value))
+                        else:
+                            value = _record_value(kind, new_value, literal_text)
                     except Denied:
-                        diagnostic('unsupported_state')
+                        diagnostic('unsupported_state', _state_metadata(kind, new_value))
                         return
                     send_focus(app, title, root, timestamp)
                     connection.send(('event',kind,selector.to_dict(),value,timestamp))
@@ -837,6 +885,7 @@ class WindowsCapture:
         self.process, self.connection = None, None
         self.started = time.monotonic()
         self.ready = False
+        self.state_diagnostics = []
 
     def _start(self):
         import multiprocessing
@@ -872,6 +921,15 @@ class WindowsCapture:
                 raise RuntimeError(event[1])
             elif event[0] == 'diagnostic':
                 self.recorder.report(event[1])
+                if len(event) > 2 and isinstance(event[2], dict) and len(self.state_diagnostics) < 100:
+                    metadata = event[2]
+                    if (metadata.get('kind') in ('toggle', 'expand') and
+                            metadata.get('payload_type') in ('int', 'bool', 'float', 'str', 'none', 'wrapped')):
+                        self.state_diagnostics.append({'reason': event[1] if event[1] in ('state_snapshot', 'unsupported_state')
+                                                       else 'unsupported_state',
+                                                       'kind': metadata['kind'], 'payload_type': metadata['payload_type'],
+                                                       'scalar_type': metadata.get('scalar_type') if metadata.get('scalar_type') in
+                                                       ('int', 'bool', 'float', 'str', 'none', 'wrapped', 'unavailable') else 'unavailable'})
             elif event[0] == 'event':
                 self.recorder.capture(event[1], Selector.from_dict(event[2]), event[3], timestamp=event[4])
     def close(self):

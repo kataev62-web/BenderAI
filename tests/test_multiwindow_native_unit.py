@@ -103,8 +103,10 @@ def test_inventory_reports_nominal_controls_missing_patterns_without_text():
     element.iface_invoke = object()
     assert windows._inventory_reason(element) is None
 
-@pytest.mark.parametrize('callback,event_property', [(True,30045),(False,30045),(True,30086),(True,30070)])
-def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, callback, event_property):
+@pytest.mark.parametrize('callback,event_property,state_payload', [
+    (True,30045,1),(False,30045,1),(True,30086,1),(True,30070,1),
+    (True,30086,None),(True,30086,True)])
+def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, callback, event_property, state_payload):
     """Exercise real child handler wiring; a stalled callback retains arrival time."""
     import sys
     from bender_ai.learning import Recorder
@@ -141,7 +143,7 @@ def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, 
                 clock[0] = 15.0
                 if callback:
                     handlers['value'].HandlePropertyChangedEvent(sender,event_property,
-                        'synthetic' if event_property == 30045 else SimpleNamespace(value=1))
+                        'synthetic' if event_property == 30045 else SimpleNamespace(value=state_payload))
         def poll(self, timeout):
             if callback or self.polled: return True
             self.polled = True
@@ -155,7 +157,8 @@ def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, 
     monkeypatch.setitem(sys.modules,'pywinauto',SimpleNamespace())
     monkeypatch.setitem(sys.modules,'pywinauto.uia_defines',SimpleNamespace(IUIA=NativeAPI))
     monkeypatch.setattr(windows.WindowsUIA,'_window',lambda *args:root)
-    monkeypatch.setattr(windows.WindowsUIA,'_find',lambda *args:SimpleNamespace(element_info=SimpleNamespace(element=sender)))
+    monkeypatch.setattr(windows.WindowsUIA,'_find',lambda *args:SimpleNamespace(element_info=SimpleNamespace(element=sender),
+        iface_toggle=SimpleNamespace(CurrentToggleState=1),iface_expand_collapse=SimpleNamespace(CurrentExpandCollapseState=1)))
     monkeypatch.setattr(windows,'process_path',lambda pid:r'C:\a.exe')
     monkeypatch.setattr(windows,'check_process_access',lambda pid:None)
     monkeypatch.setattr(windows.time,'perf_counter',lambda:clock[0])
@@ -268,3 +271,26 @@ def test_default_text_capture_does_not_inspect_variant_value():
         def __str__(self): raise AssertionError('default must never stringify text')
     assert windows._record_value('set_text',PrivateVariant(),False) == ''
     assert windows._record_value('set_text',SimpleNamespace(value='Synthetic'),True) == 'Synthetic'
+
+
+@pytest.mark.parametrize('payload,actual,expected', [(None,1,'on'),(True,0,'off')])
+def test_state_event_can_use_verified_pattern_snapshot_for_missing_payload(payload,actual,expected):
+    element = SimpleNamespace(iface_toggle=SimpleNamespace(CurrentToggleState=actual))
+    assert windows._record_state('toggle',payload,element) == (expected,True)
+
+
+def test_unsupported_explicit_enum_cannot_be_hidden_by_snapshot():
+    class NeverRead:
+        @property
+        def iface_toggle(self): raise AssertionError('unsupported enum must not query pattern')
+    with pytest.raises(Denied): windows._record_state('toggle',SimpleNamespace(value=2),NeverRead())
+
+
+def test_state_snapshot_does_not_read_text_and_requires_supported_actual_enum():
+    class Element:
+        iface_expand_collapse = SimpleNamespace(CurrentExpandCollapseState=1)
+        @property
+        def iface_value(self): raise AssertionError('state must never read text')
+    assert windows._record_state('expand',None,Element()) == ('expanded',True)
+    Element.iface_expand_collapse.CurrentExpandCollapseState = 3
+    with pytest.raises(Denied): windows._record_state('expand',None,Element())

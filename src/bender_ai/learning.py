@@ -5,6 +5,7 @@ from .models import Plan, Step, Selector, ValidationError
 from .security import check_private_title
 
 DIAGNOSTICS = {
+    'state_snapshot':'UIA не передала пригодное состояние события; записано проверенное текущее состояние контрола. Проверьте порядок шагов.',
     'unsupported_control': 'Контрол не предоставляет поддерживаемое UIA-действие; действие не записано.',
     'unsupported_pattern': 'Нужный UIA Pattern недоступен; требуется отдельный адаптер.',
     'password_or_unknown': 'Защищённое поле или неизвестный статус пароля исключены до чтения значения.',
