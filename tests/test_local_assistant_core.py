@@ -97,3 +97,27 @@ def test_unverified_launch_is_not_success_and_never_runs_next_step(tmp_path):
     assert not (tmp_path/'never').exists()
     assert [s['status'] for s in store.run_steps(result.run_id)]==['unverified','skipped']
     store.close()
+
+
+def test_invalid_known_command_is_rejected_without_an_inference_request():
+    class Local:
+        def plan(self,*a,**kw):raise AssertionError('Do not send invalid known command to AI')
+    with pytest.raises(ValidationError):
+        brain.HybridProvider(Local()).plan('Создай папку ".." в "C:\\Work"')
+
+
+def test_file_actions_reject_outside_roots_oversize_nonregular_and_copy_overwrite(tmp_path):
+    root=tmp_path/'allowed';root.mkdir();outside=tmp_path/'outside.txt';outside.write_text('outside')
+    store=Store(tmp_path/'db');p=Policy(read_roots=[str(root)],write_roots=[str(root)])
+    runner=Executor(ActionRegistry(p,store),store)
+    with pytest.raises(Denied):runner.run(Plan([Step('read_text_file',{'path':str(outside)})]))
+    (root/'link.txt').symlink_to(outside)
+    with pytest.raises(Denied):runner.run(Plan([Step('read_text_file',{'path':str(root/'link.txt')})]))
+    large=root/'large.txt';large.write_bytes(b'x'*65537)
+    result=runner.run(Plan([Step('read_text_file',{'path':str(large)})]))
+    assert result.status=='failed' and '64' in result.error
+    small=root/'small.txt';small.write_text('small');existing=root/'existing.txt';existing.write_text('keep')
+    result=runner.run(Plan([Step('copy_file',{'source':str(small),'target':str(existing)})]),confirmed=True)
+    assert result.status=='failed' and existing.read_text()=='keep'
+    assert 'существует' in result.error
+    store.close()
