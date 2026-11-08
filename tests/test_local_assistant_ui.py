@@ -12,9 +12,11 @@ def qt():
     return QApplication.instance() or QApplication([])
 
 @pytest.fixture
-def window(qt, tmp_path):
+def window(qt, tmp_path, monkeypatch):
     store = Store(tmp_path / 'ui.db')
     win = MainWindow(store, test_mode=True)
+    win.autostart_calls = []
+    monkeypatch.setattr('bender_ai.app.autostart',win.autostart_calls.append)
     yield win
     win.shutdown()
     store.close()
@@ -106,6 +108,7 @@ def test_russian_settings_persist_provider_model(window, monkeypatch):
     monkeypatch.setattr(QDialog, 'exec', save)
     window.settings()
     assert window.store.setting('ai')['provider'] == 'ollama'
+    assert window.autostart_calls == [False]
     assert 'qwen2.5-coder:3b' in window.provider_status.text()
 
 def test_ollama_failure_clears_checking_label(window, qt, monkeypatch):

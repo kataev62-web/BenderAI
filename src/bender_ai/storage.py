@@ -110,7 +110,7 @@ class Store:
     def start_run(self, plan):
         run = uuid.uuid4().hex
         with self.transaction() as db:
-            db.execute('INSERT INTO runs(id,name,status) VALUES(?,?,?)', (run, plan.name, 'running'))
+            db.execute('INSERT INTO runs(id,name,status) VALUES(?,?,?)', (run, f'План из {len(plan.steps)} шагов', 'running'))
             db.execute('DELETE FROM runs WHERE rowid NOT IN (SELECT rowid FROM runs ORDER BY rowid DESC LIMIT 2000)')
             db.executemany('INSERT INTO run_steps VALUES(?,?,?,?,?)', [(run, i, s.action, 'pending', '') for i,s in enumerate(plan.steps)])
         return run

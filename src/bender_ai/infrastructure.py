@@ -121,7 +121,15 @@ def autostart(enable):
             raise RuntimeError('Автозапуск доступен только в Windows')
         return
     import winreg
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\CurrentVersion\Run', 0, winreg.KEY_SET_VALUE) as key:
+    path = r'Software\Microsoft\Windows\CurrentVersion\Run'
+    if enable:
+        handle = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_SET_VALUE)
+    else:
+        try:
+            handle = winreg.OpenKey(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_SET_VALUE)
+        except FileNotFoundError:
+            return
+    with handle as key:
         if enable:
             # Frozen GUI executable or pythonw + module, always quoted.
             if getattr(sys, 'frozen', False):
