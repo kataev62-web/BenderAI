@@ -100,7 +100,7 @@ def test_linked_token_absence_only_uses_restricted_fallback(tokens, monkeypatch,
             launcher._fixture_token(current)
         assert calls == []
     else:
-        assert launcher._fixture_token(current) is child
+        assert launcher._fixture_token(current) == (child, True)
         assert calls[0] == ('restrict', current, 0x5, [('administrators', 0)], None, None)
         assert calls[1][:3] == ('set', child, 'integrity')
         assert calls[1][3][1] == 0x20
@@ -113,7 +113,7 @@ def test_linked_token_is_preferred_without_restriction(tokens, monkeypatch):
     api.TokenLinkedToken = 'linked'
     original = api.GetTokenInformation
     api.GetTokenInformation = lambda token, info: child if info == 'linked' else original(token, info)
-    assert launcher._fixture_token(current) is child
+    assert launcher._fixture_token(current) == (child, False)
 
 
 @pytest.mark.parametrize('unsafe_field,unsafe_value', [
@@ -140,3 +140,36 @@ def test_restricted_token_still_must_pass_unchanged_policy_and_closes_on_failure
     with pytest.raises(RuntimeError):
         launcher._fixture_token(current)
     assert child.closed
+
+
+def test_restricted_launcher_uses_createprocessasuser_without_handle_inheritance(monkeypatch):
+    import windows_fixture_process as launcher
+    calls = []
+    process, thread, token = object(), object(), object()
+    def create(*args):
+        calls.append(args)
+        return process, thread, 123, 456
+    api = SimpleNamespace(STARTUPINFO=lambda:SimpleNamespace(), CreateProcessAsUser=create)
+    closed = []
+    monkeypatch.setitem(sys.modules,'win32process',api)
+    monkeypatch.setitem(sys.modules,'win32api',SimpleNamespace(CloseHandle=closed.append))
+    result = launcher._spawn_restricted_fixture(token, [sys.executable, '-c', 'pass'])
+    assert result.pid == 123
+    assert calls[0][0] is token
+    assert calls[0][1] == sys.executable  # explicit executable avoids command parsing ambiguity
+    assert calls[0][3:9] == (None, None, False, 0, None, launcher.os.getcwd())
+    assert calls[0][9].lpDesktop == 'winsta0\\default'
+    assert closed == [thread]
+
+
+def test_restricted_launcher_reports_safe_api_name_and_error_code(monkeypatch):
+    import windows_fixture_process as launcher
+    class LaunchError(OSError):
+        winerror = 5
+    def failure(*args): raise LaunchError('private command arguments')
+    monkeypatch.setitem(sys.modules,'win32process',SimpleNamespace(
+        STARTUPINFO=lambda:SimpleNamespace(), CreateProcessAsUser=failure))
+    monkeypatch.setitem(sys.modules,'win32api',SimpleNamespace())
+    with pytest.raises(RuntimeError, match='CreateProcessAsUser failed: 5') as exc:
+        launcher._spawn_restricted_fixture(object(), [sys.executable,'-c','pass'])
+    assert 'private' not in str(exc.value)

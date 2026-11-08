@@ -53,7 +53,7 @@ def _fixture_token(current):
             win32security.SetTokenInformation(token, win32security.TokenIntegrityLevel,
                                              (medium, 0x00000020))  # SE_GROUP_INTEGRITY
         _verify_medium_token(token, current)
-        return token
+        return token, restricted
     except BaseException:
         token.Close()
         raise
@@ -96,6 +96,23 @@ class _NativeProcess:
             pass
 
 
+def _spawn_restricted_fixture(token, args):
+    """Documented launch API for a restricted copy of the caller's own token."""
+    import win32api
+    import win32process
+    start = win32process.STARTUPINFO()
+    start.lpDesktop = 'winsta0\\default'
+    try:
+        process, thread, pid, _ = win32process.CreateProcessAsUser(
+            token, args[0], subprocess.list2cmdline(args), None, None, False,
+            0, None, os.getcwd(), start)
+    except Exception as exc:
+        raise RuntimeError('CreateProcessAsUser failed: ' +
+                           str(getattr(exc, 'winerror', 0))) from None
+    win32api.CloseHandle(thread)
+    return _NativeProcess(process, pid, args)
+
+
 def spawn_fixture(args):
     """Popen-like fixture spawn; require an absolute executable."""
     if sys.platform != 'win32':
@@ -113,7 +130,9 @@ def spawn_fixture(args):
         if not win32security.GetTokenInformation(current, win32security.TokenElevation):
             _verify_medium_token(current, current)
             return subprocess.Popen(args)
-        linked = _fixture_token(current)
+        linked, restricted = _fixture_token(current)
+        if restricted:
+            return _spawn_restricted_fixture(linked, args)
 
         class StartupInfo(ctypes.Structure):
             _fields_ = [('cb', wintypes.DWORD), ('lpReserved', wintypes.LPWSTR),
@@ -143,7 +162,7 @@ def spawn_fixture(args):
         if not api(int(linked), 0, args[0], command, 0, None, os.getcwd(),
                    ctypes.byref(start), ctypes.byref(process)):
             # Numeric Windows error only; command arguments can contain test data.
-            raise RuntimeError('Medium-integrity fixture launch failed: ' + str(ctypes.get_last_error()))
+            raise RuntimeError('CreateProcessWithTokenW failed: ' + str(ctypes.get_last_error()))
         win32api.CloseHandle(process.hThread)
         return _NativeProcess(process.hProcess, process.dwProcessId, args)
     finally:
