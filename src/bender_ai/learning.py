@@ -76,7 +76,7 @@ class Recorder:
             if message not in self.diagnostics and len(self.diagnostics)<100:
                 self.diagnostics.append(message)
 
-    def capture(self, kind, selector, value='', password=False, timestamp=None):
+    def capture(self, kind, selector, value='', password=False, timestamp=None, observation_start=None):
         with self.lock:
             if not self.active or (timestamp is None and self.paused):
                 return
@@ -85,6 +85,12 @@ class Recorder:
                 return
             if any(start <= moment < end for start,end in self.pause_intervals):
                 return
+            if observation_start is not None:
+                # Sampling only proves a transition somewhere between two reads.
+                # Reject ambiguous intervals spanning any pause or recorder start.
+                if (observation_start < self.started_at or observation_start > moment or
+                        any(start <= moment and end > observation_start for start,end in self.pause_intervals)):
+                    return
             pair = (selector.app.casefold(), selector.window)
             if pair not in self.windows:
                 self.report('unselected_window')

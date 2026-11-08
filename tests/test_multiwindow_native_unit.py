@@ -193,8 +193,8 @@ def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, 
                       {30045:'set_text',30086:'toggle',30070:'expand'}[event_property])
             assert any(event[1] == output for event in events), messages
     assert all(event[4] == 15.0 for event in events)
-    for _,kind,selector,value,timestamp in events:
-        recorder.capture(kind,Selector.from_dict(selector),value,timestamp=timestamp)
+    for _,kind,selector,value,timestamp,observation_start in events:
+        recorder.capture(kind,Selector.from_dict(selector),value,timestamp=timestamp,observation_start=observation_start)
     assert recorder.steps == []
 
 
@@ -472,3 +472,26 @@ def test_scoped_state_sampler_rejects_unknown_and_unsupported_pattern_states():
     element.element_info.element.CurrentIsPassword = None
     element.iface_expand_collapse.CurrentExpandCollapseState = 0
     assert sampler.changes(10) == []
+
+
+def test_sampler_revalidates_membership_before_pattern_access():
+    class Element:
+        element_info = SimpleNamespace(control_type='CheckBox', automation_id='x', element=Raw())
+        @property
+        def iface_toggle(self): raise AssertionError('Foreign pattern must never be read')
+    item = Element()
+    def reject(handle, element): raise Denied('Moved outside approved root')
+    assert windows._ScopedStateSampler([(10,item)], validate=reject).changes(10) == []
+
+
+def test_sample_transition_spanning_pause_is_not_recorded():
+    from bender_ai.learning import Recorder
+    recorder = Recorder('a.exe','A')
+    recorder.start()
+    recorder.started_at = 1.0
+    recorder.pause_intervals = [(10.0,20.0)]
+    selector = Selector('a.exe','A','c','CheckBox')
+    recorder.capture('toggle',selector,'on',timestamp=21.0,observation_start=9.0)
+    assert recorder.steps == []
+    recorder.capture('toggle',selector,'on',timestamp=22.0,observation_start=21.0)
+    assert recorder.steps[-1].action == 'uia_toggle'

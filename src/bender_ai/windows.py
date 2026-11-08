@@ -807,7 +807,10 @@ class _ScopedStateSampler:
     Foreground re-entry resets the baseline rather than recording background work.
     Every emitted transition still passes the normal live selector/policy checks.
     """
-    def __init__(self, entries):
+    def __init__(self, entries, validate=None):
+        self.validate = validate
+        self.observation_start = {}
+        self.observed_at = {}
         self.entries = list(entries)[:1000]
         self.previous = {}
         self.foreground = None
@@ -847,14 +850,23 @@ class _ScopedStateSampler:
     def changes(self, foreground):
         changed = []
         same_window = foreground == self.foreground
+        timestamp = time.perf_counter()
+        self.observation_start = {}
         for index, (handle, item) in enumerate(self.entries):
             if handle != foreground:
                 self.previous.pop(index, None)
                 continue
-            state = self.state(item)
+            try:
+                if self.validate:
+                    self.validate(handle, item)
+                state = self.state(item)
+            except Exception:
+                state = None
             old = self.previous.get(index)
             if state is not None and old is not None and same_window and state != old:
+                self.observation_start[id(item)] = self.observed_at[index]
                 changed.append((item, *state))
+            self.observed_at[index] = timestamp
             self.previous[index] = state
         self.foreground = foreground
         return changed
@@ -894,15 +906,15 @@ def _record_events(connection, windows, policy_data, literal_text):
                 raise Denied('Записываемое окно изменилось')
             policy.identity(app, process_path(root.process_id()))
             check_process_access(root.process_id())
-        def send_focus(app, title, root, timestamp):
+        def send_focus(app, title, root, timestamp, observation_start=None):
             nonlocal active
             if active != root.handle:
                 selector = Selector(app, title, '__window__', 'Window')
-                connection.send(('event', 'focus', selector.to_dict(), '', timestamp))
+                connection.send(('event', 'focus', selector.to_dict(), '', timestamp, observation_start))
                 active = root.handle
         def diagnostic(reason, metadata=None):
             connection.send(('diagnostic', reason) if metadata is None else ('diagnostic', reason, metadata))
-        def emit(kind, sender, new_value='', timestamp=None):
+        def emit(kind, sender, new_value='', timestamp=None, observation_start=None):
             nonlocal failed
             # Preserve callback arrival time across lock contention and slow COM reads.
             if timestamp is None:
@@ -956,8 +968,8 @@ def _record_events(connection, windows, policy_data, literal_text):
                         reason = 'unsupported_pattern' if str(exc) == 'unsupported_pattern' else 'unsupported_state'
                         diagnostic(reason, _state_metadata(kind, new_value))
                         return
-                    send_focus(app, title, root, timestamp)
-                    connection.send(('event',output_kind,selector.to_dict(),value,timestamp))
+                    send_focus(app, title, root, timestamp, observation_start)
+                    connection.send(('event',output_kind,selector.to_dict(),value,timestamp,observation_start))
                 except Exception:
                     failed = True
                     connection.send(('error','UIA не смогла проверить событие. Запись остановлена.'))
@@ -993,7 +1005,18 @@ def _record_events(connection, windows, policy_data, literal_text):
                 subscriptions.append(('event',event_id,element))
             api.iuia.AddPropertyChangedEventHandlerNativeArray(element,api.tree_scope['subtree'],None,properties_handler,properties,4)
             subscriptions.append(('property',None,element))
-        sampler = _ScopedStateSampler(sampled_controls)
+        def validate_sample(handle, item):
+            app, title, root = next((a,t,r) for a,t,r in roots if r.handle == handle)
+            validate(app, title, root)
+            raw = item.element_info.element
+            if (win32gui.GetForegroundWindow() != handle or not safe_raw_element(raw)
+                    or not _belongs_to_root(api, raw, root.element_info.element)):
+                raise Denied('Контрол вне активного разрешённого окна')
+            info = item.element_info
+            resolved = adapter._find(Selector(app, title, info.automation_id, info.control_type))
+            if not api.iuia.CompareElements(raw, resolved.element_info.element):
+                raise Denied('Элемент изменился')
+        sampler = _ScopedStateSampler(sampled_controls, validate=validate_sample)
         sampler.changes(win32gui.GetForegroundWindow())
         connection.send(('ready',))
         while not connection.poll(.05):
@@ -1010,7 +1033,8 @@ def _record_events(connection, windows, policy_data, literal_text):
                     active = None
                 for item, kind, value in sampler.changes(foreground):
                     diagnostic('state_snapshot')
-                    emit(kind, item.element_info.element, value, timestamp=timestamp)
+                    emit(kind, item.element_info.element, value, timestamp=timestamp,
+                         observation_start=sampler.observation_start[id(item)])
     except Exception as exc:
         try:
             connection.send(('error','Запись UIA недоступна: '+type(exc).__name__
@@ -1084,7 +1108,8 @@ class WindowsCapture:
                                                        'scalar_type': metadata.get('scalar_type') if metadata.get('scalar_type') in
                                                        ('int', 'bool', 'float', 'str', 'none', 'wrapped', 'unavailable') else 'unavailable'})
             elif event[0] == 'event':
-                self.recorder.capture(event[1], Selector.from_dict(event[2]), event[3], timestamp=event[4])
+                self.recorder.capture(event[1], Selector.from_dict(event[2]), event[3], timestamp=event[4],
+                                      observation_start=event[5] if len(event)>5 else None)
     def close(self):
         if self.process:
             if self.process.is_alive():
