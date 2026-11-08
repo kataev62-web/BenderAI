@@ -130,27 +130,42 @@ class WindowsDesktop:
 
     def active(self, policy):
         require_windows()
-        import win32gui
-        import win32process
-        hwnd = win32gui.GetForegroundWindow()
-        _, pid = win32process.GetWindowThreadProcessId(hwnd)
-        name = process_name(pid)
-        ensure_uia_app(name)
-        policy.identity(name, process_path(pid))
-        check_process_access(pid)
-        policy.app(name)
-        title = win32gui.GetWindowText(hwnd)
-        policy.window(name, title)
-        check_private(title)
-        with com_thread():
-            from pywinauto import Desktop
-            window = Desktop(backend='uia').window(handle=hwnd).wrapper_object()
-            elements = []
-            for e in window.descendants()[:300]:
-                if safe_element(e):
-                    info = e.element_info
-                    elements.append({'automation_id': info.automation_id, 'control_type': info.control_type})
-        return {'process': name, 'title': title, 'elements': elements}
+        if not policy.read_apps:
+            raise Denied('Нет разрешения на чтение приложений')
+        try:
+            import win32gui
+            import win32process
+            hwnd = win32gui.GetForegroundWindow()
+            if not hwnd or not win32gui.IsWindow(hwnd):
+                raise Denied('Активное окно недоступно')
+            thread, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if not thread or not isinstance(pid, int) or not 0 < pid <= 0xFFFFFFFF:
+                raise Denied('Активное окно недоступно')
+            name = process_name(pid)
+            ensure_uia_app(name)
+            policy.identity(name, process_path(pid))
+            check_process_access(pid)
+            policy.app(name)
+            title = win32gui.GetWindowText(hwnd)
+            policy.window(name, title)
+            check_private(title)
+            with com_thread():
+                from pywinauto import Desktop
+                window = Desktop(backend='uia').window(handle=hwnd).wrapper_object()
+                if (not win32gui.IsWindow(hwnd) or
+                        win32process.GetWindowThreadProcessId(hwnd) != (thread, pid) or
+                        window.process_id() != pid or window.window_text() != title):
+                    raise Denied('Активное окно изменилось')
+                elements = []
+                for e in window.descendants()[:300]:
+                    if safe_element(e):
+                        info = e.element_info
+                        elements.append({'automation_id': info.automation_id, 'control_type': info.control_type})
+            return {'process': name, 'title': title, 'elements': elements}
+        except Denied:
+            raise
+        except Exception:
+            raise Denied('Не удалось безопасно прочитать активное окно') from None
 
 
 def process_path(pid):
@@ -420,10 +435,67 @@ class WindowsUIA:
         self.policy.window(selector.app, selector.window, control=True)
         with com_thread():
             import win32gui
+            import win32api
+            import win32process
             window = self._window(selector)
-            window.set_focus()
-            if win32gui.GetForegroundWindow() != window.handle:
+            hwnd = window.handle
+            attached = []
+            try:
+                end = time.monotonic() + 2
+                if not win32gui.IsWindow(hwnd):
+                    raise Denied('Окно недоступно')
+                if win32gui.IsIconic(hwnd):
+                    win32gui.ShowWindow(hwnd, 9)  # SW_RESTORE, no input injection
+                def activate():
+                    try:
+                        win32gui.SetForegroundWindow(hwnd)
+                    except Exception:
+                        pass  # Only actual foreground state can establish success.
+                activate()
+                initial_end = min(end, time.monotonic() + .25)
+                while time.monotonic() < initial_end:
+                    if win32gui.GetForegroundWindow() == hwnd:
+                        return
+                    time.sleep(.025)
+                # UIA SetFocus alone does not activate a top-level native window.
+                # Link only this authorized activation's current/foreground/target queues.
+                win32gui.PeekMessage(None, 0, 0, 0)  # Ensure the current thread has a queue.
+                current = win32api.GetCurrentThreadId()
+                foreground = win32gui.GetForegroundWindow()
+                target_thread, _ = win32process.GetWindowThreadProcessId(hwnd)
+                threads = []
+                if foreground and win32gui.IsWindow(foreground):
+                    foreground_thread, _ = win32process.GetWindowThreadProcessId(foreground)
+                    threads.append(foreground_thread)
+                threads.append(target_thread)
+                for thread in dict.fromkeys(threads):
+                    if thread and thread != current:
+                        result = win32process.AttachThreadInput(current, thread, True)
+                        if result is False:
+                            raise Denied('Windows отказала в переключении окна')
+                        attached.append((current, thread))
+                while time.monotonic() < end:
+                    if not win32gui.IsWindow(hwnd):
+                        raise Denied('Окно недоступно')
+                    activate()
+                    if win32gui.GetForegroundWindow() == hwnd:
+                        return
+                    time.sleep(.025)
                 raise Denied('Windows не подтвердила переключение окна')
+            except Denied:
+                raise
+            except Exception:
+                raise Denied('Windows не подтвердила переключение окна') from None
+            finally:
+                detach_failed = False
+                for first, second in reversed(attached):
+                    try:
+                        if win32process.AttachThreadInput(first, second, False) is False:
+                            detach_failed = True
+                    except Exception:
+                        detach_failed = True
+                if detach_failed:
+                    raise Denied('Windows не завершила переключение окна')
 
     def window_exists(self, selector):
         # Policy failures must remain failures; only absence can be waited for.

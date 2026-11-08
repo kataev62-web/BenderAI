@@ -16,6 +16,32 @@ LABELS = {'read_text_file':'Прочитать текстовый файл','wri
           'launch_approved_gradle_task': 'Утверждённая задача Gradle'}
 
 
+ARG_LABELS = {'app_id': 'Приложение', 'path': 'Путь', 'parent': 'Родительская папка',
+              'name': 'Имя', 'text': 'Текст', 'timeout': 'Ожидание, сек.',
+              'state': 'Состояние', 'expected_state': 'Ожидаемый результат',
+              'project_path': 'Проект', 'task': 'Задача', 'source': 'Исходный файл',
+              'target': 'Целевой файл', 'app': 'Процесс', 'window': 'Окно',
+              'automation_id': 'ID элемента', 'control_type': 'Тип элемента', 'parents': 'Родители'}
+
+
+def readable_plan(plan):
+    # Values remain exact and JSON-quoted: embedded newlines cannot imitate another step.
+    quoted = lambda value: json.dumps(value, ensure_ascii=False)
+    lines = ['План: ' + quoted(plan.name)]
+    if plan.parameters:
+        lines.append('Параметры при запуске: ' + quoted(plan.parameters))
+    for number, step in enumerate(plan.steps, 1):
+        lines.append(f'{number}. {LABELS.get(step.action, step.action)}')
+        for key, value in step.args.items():
+            if key == 'selector':
+                lines.append('   Целевой элемент:')
+                for field, field_value in value.items():
+                    lines.append('      ' + ARG_LABELS.get(field, field) + ': ' + quoted(field_value))
+            else:
+                lines.append('   ' + ARG_LABELS.get(key, key) + ': ' + quoted(value))
+    return '\n'.join(lines)
+
+
 class StepDialog(QDialog):
     def __init__(self, step, parent=None):
         super().__init__(parent)

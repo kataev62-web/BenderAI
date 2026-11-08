@@ -175,3 +175,67 @@ def test_non_boolean_password_status_is_unknown_and_rejected(unknown):
     raw = SimpleNamespace(CurrentIsPassword=unknown)
     assert not windows.safe_raw_element(raw)
     assert not windows.safe_element(SimpleNamespace(element_info=SimpleNamespace(element=raw)))
+
+
+def test_active_empty_permission_policy_denies_before_os_metadata(monkeypatch):
+    import sys
+    from bender_ai.security import Policy
+    monkeypatch.setattr(windows,'require_windows',lambda:None)
+    def forbidden(): raise AssertionError('metadata must not be queried')
+    monkeypatch.setitem(sys.modules,'win32gui',SimpleNamespace(GetForegroundWindow=forbidden))
+    monkeypatch.setitem(sys.modules,'win32process',SimpleNamespace())
+    with pytest.raises(Denied): windows.WindowsDesktop().active(Policy())
+
+
+def test_active_missing_or_stale_foreground_is_safe_denial(monkeypatch):
+    import sys
+    from bender_ai.security import Policy
+    monkeypatch.setattr(windows,'require_windows',lambda:None)
+    monkeypatch.setitem(sys.modules,'win32gui',SimpleNamespace(GetForegroundWindow=lambda:0,IsWindow=lambda hwnd:False))
+    def stale(hwnd): raise OSError('private native error')
+    monkeypatch.setitem(sys.modules,'win32process',SimpleNamespace(GetWindowThreadProcessId=stale))
+    with pytest.raises(Denied) as exc:
+        windows.WindowsDesktop().active(Policy(read_apps=['a.exe']))
+    assert 'private' not in str(exc.value)
+
+
+@pytest.mark.parametrize('needs_attachment,refuses,attachment_error', [
+    (False,False,False),(True,False,False),(True,True,False),(True,True,True)])
+def test_native_focus_waits_for_root_activation_and_detaches(monkeypatch, needs_attachment, refuses, attachment_error):
+    import sys
+    from contextlib import nullcontext
+    clock = [0.0]
+    state = {'foreground':41,'calls':0,'attached':set()}
+    attachments = []
+    restored = []
+    def activate(hwnd):
+        state['calls'] += 1
+        if not refuses and state['calls'] >= 2 and (not needs_attachment or state['attached']):
+            state['foreground'] = hwnd
+    def attach(first,second,value):
+        if attachment_error and value and second == 3:
+            raise OSError('native attachment refused')
+        attachments.append((first,second,value))
+        if value: state['attached'].add((first,second))
+        else: state['attached'].discard((first,second))
+    monkeypatch.setitem(sys.modules,'win32gui',SimpleNamespace(GetForegroundWindow=lambda:state['foreground'],
+        IsWindow=lambda hwnd:True,IsIconic=lambda hwnd:True,ShowWindow=lambda hwnd,mode:restored.append((hwnd,mode)),
+        SetForegroundWindow=activate,PeekMessage=lambda *args:None))
+    monkeypatch.setitem(sys.modules,'win32api',SimpleNamespace(GetCurrentThreadId=lambda:1))
+    monkeypatch.setitem(sys.modules,'win32process',SimpleNamespace(
+        GetWindowThreadProcessId=lambda hwnd:(3 if hwnd == 42 else 2,7),AttachThreadInput=attach))
+    monkeypatch.setattr(windows,'com_thread',nullcontext)
+    monkeypatch.setattr(windows.time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(windows.time,'sleep',lambda seconds:clock.__setitem__(0,clock[0]+seconds))
+    ui = windows.WindowsUIA(SimpleNamespace(app=lambda *a,**k:None,window=lambda *a,**k:None))
+    monkeypatch.setattr(ui,'_window',lambda selector:SimpleNamespace(handle=42,set_focus=lambda:None))
+    selector = Selector('a.exe','A','root','Window')
+    if refuses:
+        with pytest.raises(Denied): ui.focus(selector)
+    else:
+        ui.focus(selector)
+        assert state['foreground'] == 42
+    assert restored == [(42,9)]
+    assert not state['attached']
+    assert {pair[:2] for pair in attachments if pair[2]} == {pair[:2] for pair in attachments if not pair[2]}
+    assert clock[0] <= 2.1

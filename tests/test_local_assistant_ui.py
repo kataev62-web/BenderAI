@@ -155,3 +155,59 @@ def test_invalid_saved_model_reports_error_without_starting_a_task(window):
     window.on_error=errors.append
     window.check_ollama()
     assert errors and window.task is None
+
+
+def test_ollama_available_label_does_not_claim_unchecked(window, qt, monkeypatch):
+    import bender_ai.app as module
+    window.store.set_setting('ai', {'provider': 'ollama', 'model': 'qwen2.5-coder:3b'})
+    monkeypatch.setattr(module.OllamaProvider, 'status', lambda self, cancellation=None: {
+        'connected': True, 'installed': True, 'model': self.model, 'message': 'Ollama доступна, модель установлена'})
+    window.check_ollama()
+    drain(qt, window)
+    assert 'доступна' in window.provider_status.text()
+    assert 'не проверено' not in window.provider_status.text()
+
+
+def test_launch_result_uses_russian_message_instead_of_internal_json(window):
+    window.on_run(SimpleNamespace(status='success', error='', outputs=[{
+        'status': 'verified', 'message': 'Приложение уже открыто, окно найдено.',
+        'executable': 'writer.exe', 'already_open': True}]))
+    displayed = window.chat.toPlainText()
+    assert 'Приложение уже открыто, окно найдено.' in displayed
+    assert 'already_open' not in displayed and 'verified' not in displayed
+
+
+def test_plan_preview_is_russian_complete_and_quotes_untrusted_values(window):
+    selector = {'app': 'writer.exe', 'window': 'Draft', 'automation_id': 'body', 'control_type': 'Edit',
+                'name': 'Имя', 'parents': ['panel']}
+    plan = Plan([Step('open_app', {'app_id': 'writer.exe'}),
+                 Step('uia_set_text', {'selector': selector, 'text': '${value_1}\n9. Ложный шаг'}),
+                 Step('wait_for_element', {'selector': selector, 'timeout': 7})], 'Мой план', ['value_1'])
+    before = plan.to_json()
+    window.accept_plan(plan)
+    displayed = window.plan_view.toPlainText()
+    assert 'Открыть приложение' in displayed and 'Ввести текст' in displayed
+    for value in ['writer.exe', 'Draft', 'body', 'Edit', 'Имя', 'panel', '${value_1}', '7']:
+        assert value in displayed
+    assert '\n9. Ложный шаг' not in displayed
+    assert '\\n9. Ложный шаг' in displayed
+    assert 'uia_set_text' not in displayed
+    assert plan.to_json() == before and window.store.runs() == []
+
+
+def test_bound_parameter_preview_precedes_confirmation_and_rejection_executes_nothing(window, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+    selector = {'app': 'writer.exe', 'window': 'Draft', 'automation_id': 'body', 'control_type': 'Edit'}
+    plan = Plan([Step('uia_set_text', {'selector': selector, 'text': '${value_1}'}),
+                 Step('write_text_file', {'path': '/allowed/result.txt', 'text': 'Результат'})],
+                'Текст', ['value_1'])
+    window.accept_plan(plan)
+    monkeypatch.setattr(QInputDialog, 'getText', lambda *args: ('Проверить\nзначение', True))
+    seen = []
+    window.confirm = lambda *args: seen.append(window.plan_view.toPlainText()) or False
+    window.execute_pending()
+    assert seen and 'Проверить\\nзначение' in seen[0]
+    assert '${value_1}' not in seen[0]
+    assert '/allowed/result.txt' in seen[0]
+    assert window.pending is plan and window.pending.parameters == ['value_1']
+    assert window.task is None and window.store.runs() == []

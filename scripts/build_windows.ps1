@@ -46,6 +46,7 @@ Copy-Item build/portable-tests.xml dist/BenderAI/portable-tests.xml
 [xml]$testReport = Get-Content build/portable-tests.xml -Raw -Encoding UTF8
 $suite = $testReport.testsuites.testsuite
 @{
+    app_version = (& $Python -c "from bender_ai import __version__; print(__version__)")
     commit = (& git rev-parse HEAD)
     workflow_run = $env:GITHUB_RUN_ID
     platform = 'windows-x64'

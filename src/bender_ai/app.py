@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
 from .actions import ActionRegistry, Executor, Cancellation
 from .brain import RuleBasedProvider, OllamaProvider, CloudProvider, DEFAULT_OLLAMA_MODEL
 from .character import Character, CharacterPack
-from .editor import SkillEditor, LABELS
+from .editor import SkillEditor, LABELS, readable_plan
 from .infrastructure import Task, CaptureTask, EmergencyHotkey, data_dir, autostart, install_russian_ui
 from .learning import Recorder
 from .models import Plan, ValidationError
@@ -23,6 +23,31 @@ from .storage import Store
 STATUS_LABELS = {'success': 'Успешно', 'unverified': 'Не подтверждено', 'failed': 'Ошибка',
                  'error': 'Ошибка', 'cancelled': 'Отменено', 'unvalidated': 'Не проверено',
                  'pending': 'Ожидает проверки', 'running': 'Выполняется', 'skipped': 'Пропущено', 'interrupted': 'Прервано'}
+
+
+def readable_result(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return 'Да' if value else 'Нет'
+    if value is None:
+        return 'Нет данных'
+    if isinstance(value, list):
+        return '\n'.join(readable_result(item) for item in value) or 'Список пуст'
+    if isinstance(value, dict):
+        if isinstance(value.get('message'), str):
+            message = value['message']
+            if value.get('executable'):
+                message += '\nФайл приложения: ' + json.dumps(value['executable'], ensure_ascii=False)
+            return message
+        labels = {'process': 'Процесс', 'title': 'Окно', 'elements': 'Элементы',
+                  'automation_id': 'ID элемента', 'control_type': 'Тип элемента',
+                  'name': 'Название', 'id': 'Идентификатор', 'created_at': 'Создано',
+                  'current_version': 'Текущая версия', 'status': 'Состояние',
+                  'executable': 'Файл приложения', 'already_open': 'Было открыто ранее',
+                  'exists': 'Существует', 'enabled': 'Доступен', 'visible': 'Виден'}
+        return '\n'.join(labels.get(key, key) + ': ' + readable_result(item) for key, item in value.items())
+    return str(value)
 
 
 class RecordingWindowsDialog(QDialog):
@@ -280,12 +305,12 @@ class MainWindow(QMainWindow):
         self.message('Ошибка', message)
         self.statusBar().showMessage('Ошибка • выполнение остановлено')
 
-    def refresh_provider_status(self):
+    def refresh_provider_status(self, connection=None):
         config = self.store.setting('ai', {})
         kind = config.get('provider', 'offline')
         if kind == 'ollama':
             self.provider_status.setText('Локальный ИИ: Ollama • модель: ' + (config.get('model') or DEFAULT_OLLAMA_MODEL)
-                                         + ' • подключение не проверено. Простые команды работают офлайн.')
+                                         + ' • ' + (connection or 'подключение не проверено') + '. Простые команды работают офлайн.')
         elif kind == 'cloud':
             self.provider_status.setText('Облачный ИИ • модель: ' + config.get('model', '') + ' • требуется разрешение сети.')
         else:
@@ -306,8 +331,9 @@ class MainWindow(QMainWindow):
         self.checking_ollama = True
         self.provider_status.setText('Проверка локального подключения Ollama…')
         def checked(result):
-            self.refresh_provider_status()
-            self.provider_status.setText(self.provider_status.text() + '\nOllama • модель: ' + result['model'] + ' • ' + result['message'])
+            self.refresh_provider_status(connection=result['message'])
+            if self.store.setting('ai', {}).get('provider', 'offline') != 'ollama':
+                self.provider_status.setText(self.provider_status.text() + '\nOllama • модель: ' + result['model'] + ' • ' + result['message'])
             self.statusBar().showMessage('Проверка Ollama завершена')
         self.start_task(lambda: provider.status(cancellation=token), checked)
 
@@ -368,7 +394,7 @@ class MainWindow(QMainWindow):
     def accept_plan(self, plan):
         self.statusBar().showMessage('План готов • проверьте шаги и нажмите «Выполнить». Действия ещё не запущены.')
         self.pending = plan
-        self.plan_view.setPlainText(plan.to_json())
+        self.plan_view.setPlainText(readable_plan(plan))
         self.execute_button.setEnabled(True)
         self.message('План', 'Проверьте шаги. Права будут проверены перед выполнением; план не выдаёт разрешений.')
 
@@ -385,6 +411,7 @@ class MainWindow(QMainWindow):
                         return
                     values[param] = value
                 plan = plan.bind(values)
+            self.plan_view.setPlainText(readable_plan(plan))
             # Permission/path validation runs in Executor's worker, never on the GUI thread.
             if plan.needs_confirmation and not self.confirm('Выполнить показанный план?', 'Разрешаете эти изменения в указанных приложениях и папках? Разрешение действует только на этот запуск.'):
                 return
@@ -408,7 +435,7 @@ class MainWindow(QMainWindow):
     def on_run(self, result, target=None):
         self.character.state = 'success' if result.status == 'success' else 'error'
         status = STATUS_LABELS.get(result.status, 'Неизвестный результат')
-        detail = result.error or (json.dumps(result.outputs, ensure_ascii=False) if result.outputs else 'План выполнен.' if result.status == 'success' else 'Проверьте журнал выполнения.')
+        detail = result.error or (readable_result(result.outputs) if result.outputs else 'План выполнен.' if result.status == 'success' else 'Проверьте журнал выполнения.')
         for action, label in LABELS.items():
             detail = detail.replace('(' + action + ')', '(' + label + ')')
         self.message('Результат', status + ': ' + detail)
