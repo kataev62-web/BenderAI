@@ -155,3 +155,13 @@ def test_expanding_legacy_exact_grant_preserves_existing_control_without_widenin
     p.window('alpha.exe','Existing',control=True)
     with pytest.raises(Denied):p.window('alpha.exe','Read only',control=True)
     assert p.window_scopes['alpha.exe']==['Existing','Read only']
+
+
+@pytest.mark.parametrize('kind,control,value',[('select','RadioButton',''),('toggle','CheckBox','on'),('expand','ComboBox','expanded')])
+def test_duplicate_state_notifications_coalesce_but_real_clicks_do_not(kind,control,value):
+    r=recorder();target=sel(ident='choice',kind=control)
+    r.capture(kind,target,value);r.capture(kind,target,value)
+    assert len(r.steps)==3  # wait/focus plus one semantic state operation
+    r.capture('click',sel(ident='button',kind='Button'))
+    r.capture('click',sel(ident='button',kind='Button'))
+    assert [s.action for s in r.steps[-2:]]==['uia_click','uia_click']
