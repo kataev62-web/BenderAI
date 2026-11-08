@@ -121,3 +121,33 @@ def test_file_actions_reject_outside_roots_oversize_nonregular_and_copy_overwrit
     assert result.status=='failed' and existing.read_text()=='keep'
     assert 'существует' in result.error
     store.close()
+
+
+def test_launch_permission_is_separate_pinned_and_never_accepts_model_paths(tmp_path):
+    p=Policy();exe=str(tmp_path/'writer.exe')
+    p.grant_app('writer.exe','Draft',executable=exe,control=True)
+    with pytest.raises(Denied):p.approved_launch('writer.exe')
+    p.grant_app('writer.exe','Draft',executable=exe,control=True,launch=True)
+    assert p.approved_launch('writer.exe')==(exe,('Draft',))
+    with pytest.raises(Denied):p.grant_app('python.exe','Training',executable=str(tmp_path/'python.exe'),control=True,launch=True)
+    with pytest.raises(Denied):p.grant_app('other.exe','Other',control=False,launch=True)
+    class Desktop:
+        calls=[]
+        def open_approved_app(self,appid):
+            self.calls.append(appid);return {'status':'verified','message':'Окно найдено'}
+    store=Store(tmp_path/'db');d=Desktop();runner=Executor(ActionRegistry(p,store,desktop=d),store)
+    plan=brain.RuleBasedProvider().plan('Открой приложение "writer.exe"')
+    assert plan.steps[0].args=={'app_id':'writer.exe'}
+    with pytest.raises(Denied):runner.run(plan)
+    assert runner.run(plan,confirmed=True).status=='success' and d.calls==['writer.exe']
+    p.revoke_app('writer.exe')
+    with pytest.raises(Denied):runner.run(plan,confirmed=True)
+    assert d.calls==['writer.exe']
+    store.close()
+
+
+def test_data_file_commands_are_parsed_offline_without_model():
+    p=brain.RuleBasedProvider()
+    assert p.plan('Прочитай файл "C:\\Work\\note.txt"').steps[0].action=='read_text_file'
+    assert p.plan('Создай файл "C:\\Work\\note.txt" с текстом "Привет"').steps[0].args['text']=='Привет'
+    assert p.plan('Скопируй файл "C:\\Work\\note.txt" в "C:\\Work\\copy.txt"').steps[0].action=='copy_file'
