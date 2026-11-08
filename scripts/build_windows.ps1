@@ -9,7 +9,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $Python -c "from pywinauto.uia_defines import IUIA; IUIA()"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& $Python -m PyInstaller --noconfirm --clean --windowed --onedir --name BenderAI --paths src --collect-submodules pywinauto --collect-submodules comtypes --hidden-import keyring.backends.Windows --hidden-import comtypes.gen.UIAutomationClient scripts/desktop_entry.py
+& $Python -m PyInstaller --noconfirm --clean --windowed --onedir --name BenderAI --paths src --collect-submodules pywinauto --collect-submodules comtypes --collect-submodules win32com --hidden-import pythoncom --hidden-import keyring.backends.Windows --hidden-import comtypes.gen.UIAutomationClient scripts/desktop_entry.py
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $Python -m PyInstaller --noconfirm --clean --windowed --onefile --name BenderTraining --distpath build/training-dist scripts/training_entry.py
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
