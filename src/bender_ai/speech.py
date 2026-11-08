@@ -25,6 +25,9 @@ def _speak_windows(text, result, clip_path=None):
         if clip_path:
             import winsound
             winsound.PlaySound(clip_path, winsound.SND_FILENAME | winsound.SND_NODEFAULT | winsound.SND_SYNC)
+        if not text:
+            result.send(("ok", ""))
+            return
         import pythoncom
         pythoncom.CoInitialize()
         try:
@@ -69,7 +72,7 @@ class SpeechController:
     def speak(self, text, clip_path=None):
         message = speech_text(text)
         self.stop()
-        if not message:
+        if not message and clip_path is None:
             return
         if sys.platform != "win32":
             raise RuntimeError("Озвучивание доступно только в Windows")
