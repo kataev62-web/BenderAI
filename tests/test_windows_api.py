@@ -111,3 +111,19 @@ def test_explorer_verification_requires_file_browser_window(monkeypatch, window_
     root = SimpleNamespace(process_id=lambda:7,class_name=lambda:window_class,
                            descendants=lambda:[])
     assert windows.window_owned_by_app(root,('explorer.exe',)) is accepted
+
+
+@pytest.mark.parametrize('path,window_class,accepted', [
+    (r'C:\Windows\System32\calc.exe','CalcFrame',True),
+    (r'C:\Windows\System32\calc.exe','SciCalc',True),
+    (r'C:\Windows\System32\calc.exe','#32770',False),
+    (r'C:\Other\calc.exe','CalcFrame',False),
+])
+def test_legacy_system_calculator_requires_trusted_path_and_actual_calculator_window(monkeypatch,path,window_class,accepted):
+    from types import SimpleNamespace
+    from bender_ai import windows
+    monkeypatch.setenv('WINDIR',r'C:\Windows')
+    monkeypatch.setattr(windows,'process_path',lambda pid:path)
+    monkeypatch.setattr(windows,'process_package_family',lambda pid:'')
+    root=SimpleNamespace(process_id=lambda:7,class_name=lambda:window_class,descendants=lambda:[])
+    assert windows.window_owned_by_app(root,('calculatorapp.exe','calculator.exe','calc.exe')) is accepted
