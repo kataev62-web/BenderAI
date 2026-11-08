@@ -96,5 +96,39 @@ class ClipLibrary:
                 return path
         return None
 
+    def speech_segments(self, reply):
+        """Route matched short phrases to WAV and everything else to synthesizer.
+
+        Never speak the same matched phrase twice. Earlier or longer matches
+        win; segment count is bounded to keep the speech worker responsive.
+        """
+        if not isinstance(reply, str):
+            raise ValueError("Ожидается текст ответа")
+        text = reply[:600]
+        pieces = []
+        index = 0
+        matches = 0
+        while index < len(text) and matches < 8:
+            best = None
+            for trigger, path in self.clips:
+                pattern = r"(?<!\\w)" + r"\\s+".join(re.escape(word) for word in trigger.split()) + r"(?!\\w)"
+                found = re.search(pattern, text[index:], flags=re.IGNORECASE)
+                if found is None:
+                    continue
+                start, end = index + found.start(), index + found.end()
+                if best is None or (start, -(end-start)) < (best[0], -(best[1]-best[0])):
+                    best = (start, end, path)
+            if best is None:
+                break
+            start, end, path = best
+            if start > index:
+                pieces.append(("text", text[index:start]))
+            pieces.append(("wav", str(path)))
+            index = end
+            matches += 1
+        if index < len(text):
+            pieces.append(("text", text[index:]))
+        return pieces
+
     def first(self):
         return self.clips[0][1] if self.clips else None
