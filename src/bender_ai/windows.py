@@ -63,7 +63,7 @@ class WindowsDesktop:
         path = (Path(os.environ['WINDIR']) / executable if executable == 'explorer.exe'
                 else system / executable)
         expected = {'notepad.exe': ('notepad.exe',),
-                    'calc.exe': ('calculatorapp.exe', 'calculator.exe'),
+                    'calc.exe': ('calculatorapp.exe', 'calculator.exe', 'calc.exe'),
                     'explorer.exe': ('explorer.exe',)}[executable]
         def verified_window():
             from pywinauto import Desktop
@@ -279,6 +279,7 @@ def trusted_app_process(pid, expected):
     if not root:
         return False
     system_paths = {
+        'calc.exe': (ntpath.join(root,'System32','calc.exe'),),
         'notepad.exe': (ntpath.join(root, 'System32', 'notepad.exe'), ntpath.join(root, 'notepad.exe')),
         'explorer.exe': (ntpath.join(root, 'explorer.exe'),),
         'applicationframehost.exe': (ntpath.join(root, 'System32', 'ApplicationFrameHost.exe'),),
@@ -308,6 +309,12 @@ def window_owned_by_app(window, expected):
                 except AttributeError:
                     window_class = window.element_info.class_name
                 return window_class in ('CabinetWClass', 'ExploreWClass')
+            if ntpath.basename(process_path(pid)).casefold()=='calc.exe':
+                try:
+                    window_class=window.class_name()
+                except AttributeError:
+                    window_class=window.element_info.class_name
+                return window_class in ('CalcFrame','SciCalc')
             return True
         if 'calculatorapp.exe' not in expected or not trusted_app_process(pid, ('applicationframehost.exe',)):
             return False
@@ -646,15 +653,24 @@ def _inventory_reason(element):
 
 
 def _record_value(kind, new_value, literal_text):
-    """Default text capture must never stringify or send a provider's value."""
+    """COM callbacks can carry VARIANT wrappers; default text stays unread."""
+    if kind == 'set_text' and not literal_text:
+        return ''  # Must precede even accessing a VARIANT's .value property.
+    if kind not in ('set_text', 'toggle', 'expand'):
+        return ''
+    if type(new_value) not in (str, int):
+        try:
+            new_value = new_value.value
+        except Exception:
+            raise Denied('unsupported_state') from None
     if kind == 'set_text':
-        return str(new_value) if literal_text else ''
-    if kind in ('toggle', 'expand'):
-        if new_value not in (0, 1):
+        if not isinstance(new_value, str):
             raise Denied('unsupported_state')
-        return ({0: 'off', 1: 'on'} if kind == 'toggle' else
-                {0: 'collapsed', 1: 'expanded'})[new_value]
-    return ''
+        return new_value
+    if type(new_value) is not int or new_value not in (0, 1):
+        raise Denied('unsupported_state')
+    return ({0: 'off', 1: 'on'} if kind == 'toggle' else
+            {0: 'collapsed', 1: 'expanded'})[new_value]
 
 
 def _record_events(connection, windows, policy_data, literal_text):

@@ -103,8 +103,8 @@ def test_inventory_reports_nominal_controls_missing_patterns_without_text():
     element.iface_invoke = object()
     assert windows._inventory_reason(element) is None
 
-@pytest.mark.parametrize('callback', [True, False])
-def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, callback):
+@pytest.mark.parametrize('callback,event_property', [(True,30045),(False,30045),(True,30086),(True,30070)])
+def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, callback, event_property):
     """Exercise real child handler wiring; a stalled callback retains arrival time."""
     import sys
     from bender_ai.learning import Recorder
@@ -114,6 +114,8 @@ def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, 
     handlers = {}
     root_raw = Raw()
     sender = Raw(root_raw)
+    sender.CurrentControlType = {30045:50004,30086:50002,30070:50024}[event_property]
+    sender.CurrentName = 'Safe'
     def title():
         if running[0]: clock[0] = 30.0  # COM resumes after pause ended at 20.
         return 'A'
@@ -138,7 +140,8 @@ def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, 
                 running[0] = True
                 clock[0] = 15.0
                 if callback:
-                    handlers['value'].HandlePropertyChangedEvent(sender,30045,'synthetic')
+                    handlers['value'].HandlePropertyChangedEvent(sender,event_property,
+                        'synthetic' if event_property == 30045 else SimpleNamespace(value=1))
         def poll(self, timeout):
             if callback or self.polled: return True
             self.polled = True
@@ -164,6 +167,8 @@ def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, 
     windows._record_events(Connection(),(('a.exe','A'),),policy.to_dict(),False)
     events = [event for event in messages if event[0] == 'event']
     assert events, messages
+    if callback:
+        assert any(event[1] == {30045:'set_text',30086:'toggle',30070:'expand'}[event_property] for event in events), messages
     assert all(event[4] == 15.0 for event in events)
     for _,kind,selector,value,timestamp in events:
         recorder.capture(kind,Selector.from_dict(selector),value,timestamp=timestamp)
@@ -239,3 +244,27 @@ def test_native_focus_waits_for_root_activation_and_detaches(monkeypatch, needs_
     assert not state['attached']
     assert {pair[:2] for pair in attachments if pair[2]} == {pair[:2] for pair in attachments if not pair[2]}
     assert clock[0] <= 2.1
+
+
+@pytest.mark.parametrize('kind,value,expected', [
+    ('toggle',1,'on'),('toggle',0,'off'),
+    ('expand',1,'expanded'),('expand',0,'collapsed'),
+])
+def test_native_variant_state_events_decode_value_property(kind,value,expected):
+    # comtypes passes input arguments unchanged; VARIANT exposes its scalar via .value.
+    wrapped = SimpleNamespace(value=value)
+    assert windows._record_value(kind,wrapped,False) == expected
+
+
+@pytest.mark.parametrize('value', [2, None, '1', 1.0, True])
+def test_native_variant_unknown_or_noninteger_state_is_rejected(value):
+    with pytest.raises(Denied): windows._record_value('toggle',SimpleNamespace(value=value),False)
+
+
+def test_default_text_capture_does_not_inspect_variant_value():
+    class PrivateVariant:
+        @property
+        def value(self): raise AssertionError('default must never access text value')
+        def __str__(self): raise AssertionError('default must never stringify text')
+    assert windows._record_value('set_text',PrivateVariant(),False) == ''
+    assert windows._record_value('set_text',SimpleNamespace(value='Synthetic'),True) == 'Synthetic'

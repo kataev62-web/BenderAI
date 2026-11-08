@@ -24,13 +24,13 @@ pytestmark = [pytest.mark.windows, pytest.mark.skipif(
     reason='requires opt-in interactive Windows desktop')]
 
 
-def eventually(predicate, timeout=15):
+def eventually(predicate, timeout=15, context=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return
         time.sleep(.05)
-    raise AssertionError('Native multi-window condition timed out')
+    raise AssertionError('Native multi-window condition timed out' + (': '+str(context()) if context else ''))
 
 
 @pytest.fixture
@@ -96,6 +96,8 @@ def test_multi_process_capture_save_reopen_parameterize_replay(native_windows, t
     recorder = Recorder(windows=list(zip(apps[:2], titles[:2])))
     recorder.start()
     capture = WindowsCapture(bridge.ui, recorder)
+    def recording_context():
+        return {'actions':[step.action for step in recorder.steps], 'diagnostics':list(recorder.diagnostics)}
     store = Store(tmp_path / 'skills.db')
     try:
         def ready():
@@ -110,32 +112,32 @@ def test_multi_process_capture_save_reopen_parameterize_replay(native_windows, t
                 capture.poll()
                 return any(s.action == 'uia_set_text' and s.args['selector']['window'] == titles[index]
                            for s in recorder.steps)
-            eventually(text_seen)
+            eventually(text_seen, context=recording_context)
             bridge.ui.click(selector(index, '1002', 'Button'))
             def click_seen():
                 capture.poll()
                 return any(s.action == 'uia_click' and s.args['selector']['window'] == titles[index]
                            for s in recorder.steps)
-            eventually(click_seen)
+            eventually(click_seen, context=recording_context)
         # Standard Win32 checkbox exposes TogglePattern; the event must become a typed step.
         bridge.ui.toggle(selector(1, '1007', 'CheckBox'), 'on')
         def toggle_seen():
             capture.poll()
             return any(s.action == 'uia_toggle' for s in recorder.steps)
-        eventually(toggle_seen)
+        eventually(toggle_seen, context=recording_context)
         bridge.ui.select(selector(1, '1008', 'RadioButton'))
         def selection_seen():
             capture.poll()
             return any(s.action == 'uia_select' and s.args['selector']['automation_id'] == '1008'
                        for s in recorder.steps)
-        eventually(selection_seen)
+        eventually(selection_seen, context=recording_context)
         for state in ('expanded', 'collapsed'):
             bridge.ui.expand(selector(1, '1006', 'ComboBox'), state)
             def expansion_seen():
                 capture.poll()
                 return any(s.action == 'uia_expand' and s.args['selector']['automation_id'] == '1006'
                            and s.args['state'] == state for s in recorder.steps)
-            eventually(expansion_seen)
+            eventually(expansion_seen, context=recording_context)
         with pytest.raises(Denied):
             bridge.ui.set_text(selector(0, '1004'), 'synthetic-password-never-persist')
         with pytest.raises(Denied):
