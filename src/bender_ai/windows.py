@@ -703,6 +703,46 @@ def _record_state(kind, raw, resolved):
         raise Denied('unsupported_state') from None
 
 
+def _record_operation(kind, raw, resolved, control_type, literal_text):
+    """Canonicalize already-verified UIA notifications to replayable operations."""
+    if kind in ('toggle', 'expand'):
+        value, snapshot = _record_state(kind, raw, resolved)
+        if kind != 'toggle' or control_type != 'RadioButton':
+            return kind, value, snapshot
+        if value == 'off':
+            return None  # An implicit radio deselection cannot be replayed directly.
+        try:
+            if resolved.iface_selection_item is None:
+                raise AttributeError
+        except Exception:
+            raise Denied('unsupported_pattern') from None
+        return 'select', '', snapshot
+    if kind == 'selection_state':
+        value = raw
+        if type(value) not in (bool, int, type(None)):
+            try:
+                value = value.value
+            except Exception:
+                raise Denied('unsupported_state') from None
+        snapshot = value is None
+        try:
+            pattern = resolved.iface_selection_item
+            if pattern is None:
+                raise AttributeError
+        except Exception:
+            raise Denied('unsupported_pattern') from None
+        if snapshot:
+            try:
+                value = pattern.CurrentIsSelected
+            except Exception:
+                raise Denied('unsupported_state') from None
+        # UIA BOOL getters can marshal as exact int or bool, never general truthiness.
+        if type(value) not in (bool, int) or value not in (0, 1):
+            raise Denied('unsupported_state')
+        return ('select', '', snapshot) if value == 1 else None
+    return kind, _record_value(kind, raw, literal_text), False
+
+
 def _state_metadata(kind, raw):
     types = {int: 'int', bool: 'bool', float: 'float', str: 'str', type(None): 'none'}
     scalar = raw
@@ -782,7 +822,7 @@ def _record_events(connection, windows, policy_data, literal_text):
                     if not automation_id or control_type is None:
                         diagnostic('unsupported_control')
                         return
-                    if kind in ('click', 'select', 'toggle', 'expand'):
+                    if kind in ('click', 'select', 'selection_state', 'toggle', 'expand'):
                         try:
                             deny_dangerous_name(sender.CurrentName)
                         except Denied:
@@ -802,17 +842,18 @@ def _record_events(connection, windows, policy_data, literal_text):
                         diagnostic('ambiguous_selector')
                         return
                     try:
-                        if kind in ('toggle', 'expand'):
-                            value, snapshot = _record_state(kind, new_value, resolved)
-                            if snapshot:
-                                diagnostic('state_snapshot', _state_metadata(kind, new_value))
-                        else:
-                            value = _record_value(kind, new_value, literal_text)
-                    except Denied:
-                        diagnostic('unsupported_state', _state_metadata(kind, new_value))
+                        operation = _record_operation(kind, new_value, resolved, control_type, literal_text)
+                        if operation is None:
+                            return
+                        output_kind, value, snapshot = operation
+                        if snapshot:
+                            diagnostic('state_snapshot', _state_metadata(kind, new_value))
+                    except Denied as exc:
+                        reason = 'unsupported_pattern' if str(exc) == 'unsupported_pattern' else 'unsupported_state'
+                        diagnostic(reason, _state_metadata(kind, new_value))
                         return
                     send_focus(app, title, root, timestamp)
-                    connection.send(('event',kind,selector.to_dict(),value,timestamp))
+                    connection.send(('event',output_kind,selector.to_dict(),value,timestamp))
                 except Exception:
                     failed = True
                     connection.send(('error','UIA не смогла проверить событие. Запись остановлена.'))
@@ -826,12 +867,12 @@ def _record_events(connection, windows, policy_data, literal_text):
             _com_interfaces_ = [api.UIA_dll.IUIAutomationPropertyChangedEventHandler]
             def HandlePropertyChangedEvent(self, sender, property_id, new_value):
                 timestamp = time.perf_counter()
-                kind = {30045:'set_text',30086:'toggle',30070:'expand'}.get(property_id)
+                kind = {30045:'set_text',30086:'toggle',30070:'expand',30079:'selection_state'}.get(property_id)
                 if kind:
                     emit(kind,sender,new_value,timestamp=timestamp)
                 return 0
         events, properties_handler = EventHandler(), PropertyHandler()
-        properties = (ctypes.c_int * 3)(30045,30086,30070)
+        properties = (ctypes.c_int * 4)(30045,30086,30070,30079)
         for app,title,root in roots:
             validate(app,title,root)
             # Inventory only selected approved trees, with fixed diagnostics and no text.
@@ -843,7 +884,7 @@ def _record_events(connection, windows, policy_data, literal_text):
             for event_id in (20009,20012):
                 api.iuia.AddAutomationEventHandler(event_id,element,api.tree_scope['subtree'],None,events)
                 subscriptions.append(('event',event_id,element))
-            api.iuia.AddPropertyChangedEventHandlerNativeArray(element,api.tree_scope['subtree'],None,properties_handler,properties,3)
+            api.iuia.AddPropertyChangedEventHandlerNativeArray(element,api.tree_scope['subtree'],None,properties_handler,properties,4)
             subscriptions.append(('property',None,element))
         connection.send(('ready',))
         while not connection.poll(.05):
@@ -923,9 +964,9 @@ class WindowsCapture:
                 self.recorder.report(event[1])
                 if len(event) > 2 and isinstance(event[2], dict) and len(self.state_diagnostics) < 100:
                     metadata = event[2]
-                    if (metadata.get('kind') in ('toggle', 'expand') and
+                    if (metadata.get('kind') in ('toggle', 'expand', 'selection_state') and
                             metadata.get('payload_type') in ('int', 'bool', 'float', 'str', 'none', 'wrapped')):
-                        self.state_diagnostics.append({'reason': event[1] if event[1] in ('state_snapshot', 'unsupported_state')
+                        self.state_diagnostics.append({'reason': event[1] if event[1] in ('state_snapshot', 'unsupported_state', 'unsupported_pattern')
                                                        else 'unsupported_state',
                                                        'kind': metadata['kind'], 'payload_type': metadata['payload_type'],
                                                        'scalar_type': metadata.get('scalar_type') if metadata.get('scalar_type') in

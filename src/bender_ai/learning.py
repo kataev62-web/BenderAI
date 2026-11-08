@@ -128,6 +128,9 @@ class Recorder:
                 args['state'] = value
             else:
                 action = {'click':'uia_click','select':'uia_select','focus':'focus_window'}[kind]
+            if (not switch and kind in ('select','toggle','expand') and self.steps
+                    and self.steps[-1].action==action and self.steps[-1].args==args):
+                return
             additions=[]
             if switch:
                 target = Selector(selector.app,selector.window,'__window__','Window').to_dict()

@@ -103,10 +103,15 @@ def test_inventory_reports_nominal_controls_missing_patterns_without_text():
     element.iface_invoke = object()
     assert windows._inventory_reason(element) is None
 
-@pytest.mark.parametrize('callback,event_property,state_payload', [
-    (True,30045,1),(False,30045,1),(True,30086,1),(True,30070,1),
-    (True,30086,None),(True,30086,True)])
-def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, callback, event_property, state_payload):
+@pytest.mark.parametrize('callback,event_property,state_payload,control_type,selection_pattern', [
+    (True,30045,1,50004,True),(False,30045,1,50004,True),
+    (True,30086,1,50002,True),(True,30070,1,50024,True),
+    (True,30086,None,50002,True),(True,30086,True,50002,True),
+    (True,30086,1,50013,True),(True,30086,0,50013,True),
+    (True,30086,1,50013,False),(True,30079,True,50013,True),
+    (True,30079,False,50013,True),(True,30079,None,50013,True)])
+def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, callback, event_property,
+                                                                  state_payload, control_type, selection_pattern):
     """Exercise real child handler wiring; a stalled callback retains arrival time."""
     import sys
     from bender_ai.learning import Recorder
@@ -116,7 +121,7 @@ def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, 
     handlers = {}
     root_raw = Raw()
     sender = Raw(root_raw)
-    sender.CurrentControlType = {30045:50004,30086:50002,30070:50024}[event_property]
+    sender.CurrentControlType = control_type
     sender.CurrentName = 'Safe'
     def title():
         if running[0]: clock[0] = 30.0  # COM resumes after pause ended at 20.
@@ -157,8 +162,11 @@ def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, 
     monkeypatch.setitem(sys.modules,'pywinauto',SimpleNamespace())
     monkeypatch.setitem(sys.modules,'pywinauto.uia_defines',SimpleNamespace(IUIA=NativeAPI))
     monkeypatch.setattr(windows.WindowsUIA,'_window',lambda *args:root)
-    monkeypatch.setattr(windows.WindowsUIA,'_find',lambda *args:SimpleNamespace(element_info=SimpleNamespace(element=sender),
-        iface_toggle=SimpleNamespace(CurrentToggleState=1),iface_expand_collapse=SimpleNamespace(CurrentExpandCollapseState=1)))
+    resolved = SimpleNamespace(element_info=SimpleNamespace(element=sender),
+        iface_toggle=SimpleNamespace(CurrentToggleState=1),iface_expand_collapse=SimpleNamespace(CurrentExpandCollapseState=1))
+    if selection_pattern:
+        resolved.iface_selection_item = SimpleNamespace(CurrentIsSelected=True)
+    monkeypatch.setattr(windows.WindowsUIA,'_find',lambda *args:resolved)
     monkeypatch.setattr(windows,'process_path',lambda pid:r'C:\a.exe')
     monkeypatch.setattr(windows,'check_process_access',lambda pid:None)
     monkeypatch.setattr(windows.time,'perf_counter',lambda:clock[0])
@@ -169,9 +177,18 @@ def test_capture_timestamp_precedes_slow_provider_and_pause_resume(monkeypatch, 
     recorder.pause_intervals = [(10.0,20.0)]
     windows._record_events(Connection(),(('a.exe','A'),),policy.to_dict(),False)
     events = [event for event in messages if event[0] == 'event']
-    assert events, messages
-    if callback:
-        assert any(event[1] == {30045:'set_text',30086:'toggle',30070:'expand'}[event_property] for event in events), messages
+    ignored = callback and ((event_property == 30086 and control_type == 50013 and state_payload == 0) or
+                            (event_property == 30079 and state_payload is False) or not selection_pattern)
+    if ignored:
+        assert events == [], messages
+        if not selection_pattern:
+            assert any(message[:2] == ('diagnostic','unsupported_pattern') for message in messages), messages
+    else:
+        assert events, messages
+        if callback:
+            output = ('select' if control_type == 50013 else
+                      {30045:'set_text',30086:'toggle',30070:'expand'}[event_property])
+            assert any(event[1] == output for event in events), messages
     assert all(event[4] == 15.0 for event in events)
     for _,kind,selector,value,timestamp in events:
         recorder.capture(kind,Selector.from_dict(selector),value,timestamp=timestamp)
@@ -294,3 +311,29 @@ def test_state_snapshot_does_not_read_text_and_requires_supported_actual_enum():
     assert windows._record_state('expand',None,Element()) == ('expanded',True)
     Element.iface_expand_collapse.CurrentExpandCollapseState = 3
     with pytest.raises(Denied): windows._record_state('expand',None,Element())
+
+
+@pytest.mark.parametrize('state,expected', [(1,('select','',False)),(0,None)])
+def test_radio_toggle_notifications_record_selection_only_for_on(state,expected):
+    element = SimpleNamespace(iface_selection_item=object())
+    assert windows._record_operation('toggle',state,element,'RadioButton',False) == expected
+
+
+def test_radio_toggle_on_requires_actual_selection_pattern():
+    with pytest.raises(Denied):
+        windows._record_operation('toggle',1,SimpleNamespace(),'RadioButton',False)
+
+
+@pytest.mark.parametrize('raw,actual,expected', [(True,False,('select','',False)),
+    (False,True,None),(None,True,('select','',True)),(None,False,None)])
+def test_selection_property_uses_boolean_and_authoritative_missing_payload(raw,actual,expected):
+    element = SimpleNamespace(iface_selection_item=SimpleNamespace(CurrentIsSelected=actual))
+    assert windows._record_operation('selection_state',raw,element,'RadioButton',False) == expected
+
+
+def test_selection_property_unsupported_boolean_rejected_without_text_read():
+    class Element:
+        iface_selection_item = SimpleNamespace(CurrentIsSelected=2)
+        @property
+        def iface_value(self): raise AssertionError('selection cannot read text')
+    with pytest.raises(Denied): windows._record_operation('selection_state',None,Element(),'RadioButton',False)
