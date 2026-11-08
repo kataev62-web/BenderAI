@@ -15,6 +15,7 @@ from .character import Character, CharacterPack
 from .editor import SkillEditor, LABELS, readable_plan
 from .infrastructure import Task, CaptureTask, EmergencyHotkey, data_dir, autostart, install_russian_ui
 from .learning import Recorder
+from .speech import SpeechController
 from .models import Plan, ValidationError
 from .security import Policy, SecretVault, Denied
 from .storage import Store
@@ -111,6 +112,7 @@ class MainWindow(QMainWindow):
         self.registry = ActionRegistry(self.policy, store, self.ui, desktop)
         self.executor = Executor(self.registry, store)
         self.character = Character()
+        self.speech = SpeechController() if sys.platform == 'win32' and not test_mode else None
         self.character.activated.connect(self.show_chat)
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -140,6 +142,7 @@ class MainWindow(QMainWindow):
         self.input.returnPressed.connect(self.send)
         row.addWidget(self.input)
         self.send_button = self.button('Предложить план', self.send, row)
+        self.button('Поговорить', self.talk, row)
         layout.addLayout(row)
         row = QHBoxLayout()
         self.execute_button = self.button('Выполнить показанный план', self.execute_pending, row)
@@ -239,6 +242,9 @@ class MainWindow(QMainWindow):
         self.state_timer = QTimer(self)
         self.state_timer.timeout.connect(self.save_state)
         self.state_timer.start(10000)
+        self.voice_timer = QTimer(self)
+        self.voice_timer.timeout.connect(self.poll_speech)
+        self.voice_timer.start(250)
 
     @staticmethod
     def button(title, fn, layout):
@@ -392,6 +398,50 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.on_error(str(exc))
 
+    def talk(self):
+        """Explicit conversation mode: never proposes or executes PC actions."""
+        if self.task is not None or self.recorder is not None:
+            return
+        text = self.input.text().strip()
+        if not text:
+            return
+        config = self.store.setting('ai', {})
+        if config.get('provider') != 'ollama':
+            self.on_error('Для разговора выберите локальный ИИ Ollama в настройках.')
+            return
+        self.input.clear()
+        self.pending = None
+        self.execute_button.setEnabled(False)
+        self.plan_view.clear()
+        self.message('Вы', text)
+        token = Cancellation(95)
+        self.active_cancel = token
+        provider = OllamaProvider(config.get('model') or DEFAULT_OLLAMA_MODEL)
+        self.start_task(lambda: provider.converse(text, cancellation=token), self.on_talk_reply)
+
+    def on_talk_reply(self, answer):
+        self.message('Бендер', answer)
+        if self.speech is not None and self.store.setting('speech_enabled', False):
+            try:
+                self.speech.speak(answer)
+                self.character.state = 'talk'
+            except (OSError, RuntimeError, ValueError) as exc:
+                self.message('Голос', 'Не удалось запустить озвучивание: ' + type(exc).__name__)
+        else:
+            self.character.state = 'idle'
+
+    def poll_speech(self):
+        if self.speech is None:
+            return
+        result = self.speech.poll()
+        if result is None:
+            return
+        status, detail = result
+        if status != 'ok':
+            self.message('Голос', detail)
+        if self.task is None and self.character.state == 'talk':
+            self.character.state = 'idle'
+
     def accept_plan(self, plan):
         self.statusBar().showMessage('План готов • проверьте шаги и нажмите «Выполнить». Действия ещё не запущены.')
         self.pending = plan
@@ -452,6 +502,8 @@ class MainWindow(QMainWindow):
             self.refresh_provider_status()
             self.provider_status.setText(self.provider_status.text() + '\nПроверка Ollama отменена.')
         self.executor.stop()
+        if self.speech is not None:
+            self.speech.stop()
         if self.active_cancel:
             self.active_cancel.event.set()
         self.pending, self.validation_target = None, None
@@ -880,6 +932,8 @@ class MainWindow(QMainWindow):
         personality.addItems(['Обычный', 'Саркастичный', 'Деловой', 'Молчаливый'])
         personality.setCurrentText(self.store.setting('personality', 'Обычный'))
         dnd, pinned, animate, startup, network, observer = [QCheckBox() for _ in range(6)]
+        speech_enabled = QCheckBox()
+        speech_enabled.setChecked(self.store.setting('speech_enabled', False))
         for box, value in [(dnd,self.character.dnd),(pinned,self.character.pinned),(animate,self.character.animate),
                            (startup,self.store.setting('autostart',False)),(network,self.policy.network),(observer,self.policy.observer)]:
             box.setChecked(value)
@@ -904,7 +958,7 @@ class MainWindow(QMainWindow):
         hotkey.addItems(['Ctrl+Alt+F12','Ctrl+Shift+F12'])
         hotkey.setCurrentIndex(int(self.store.setting('hotkey_shift',False)))
         for label, field in [('Характер',personality),('Не мешать / пропуск кликов',dnd),('Закрепить позицию',pinned),
-            ('Анимации',animate),('Скорость',speed),('Размер',size),('Автозапуск Windows',startup),
+            ('Анимации',animate),('Скорость',speed),('Размер',size),('Озвучивать ответы (локально)',speech_enabled),('Автозапуск Windows',startup),
             ('Наблюдатель (без изменений)',observer),('Разрешить облачную сеть',network),('ИИ',provider),
             ('Модель',model),('Адрес облачного API (HTTPS)',endpoint),('Новый API-ключ',key),('Экстренный стоп',hotkey)]:
             form.addRow(label,field)
@@ -941,6 +995,9 @@ class MainWindow(QMainWindow):
             autostart(startup.isChecked())
             self.store.set_setting('autostart',startup.isChecked())
             self.store.set_setting('personality',personality.currentText())
+            self.store.set_setting('speech_enabled',speech_enabled.isChecked())
+            if not speech_enabled.isChecked() and self.speech is not None:
+                self.speech.stop()
             self.store.set_setting('ai',{'provider':provider.currentData(),'model':model.text(),'endpoint':endpoint.text()})
             self.store.set_setting('hotkey_shift',hotkey.currentIndex() == 1)
             self.policy.network, self.policy.observer = network.isChecked(), observer.isChecked()
@@ -967,6 +1024,9 @@ class MainWindow(QMainWindow):
 
     def shutdown(self):
         self.state_timer.stop()
+        self.voice_timer.stop()
+        if self.speech is not None:
+            self.speech.stop()
         if self.bridge:
             self.bridge.close()
         self.save_state()
