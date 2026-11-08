@@ -1,4 +1,4 @@
-"""Optional, local Windows SAPI speech. No audio samples or voice cloning.
+"""Optional Windows SAPI speech and user-supplied WAV reactions. No bundled samples.
 
 A separate spawn process is terminated by STOP so a stuck TTS driver cannot
 freeze the assistant. Only text explicitly sent for speech crosses this boundary.
@@ -18,10 +18,13 @@ def speech_text(value):
     return clean.strip()[:MAX_SPEECH_CHARS]
 
 
-def _speak_windows(text, result):
+def _speak_windows(text, result, clip_path=None):
     try:
         if sys.platform != "win32":
             raise RuntimeError("Голос доступен только в Windows")
+        if clip_path:
+            import winsound
+            winsound.PlaySound(clip_path, winsound.SND_FILENAME | winsound.SND_NODEFAULT | winsound.SND_SYNC)
         import pythoncom
         pythoncom.CoInitialize()
         try:
@@ -63,7 +66,7 @@ class SpeechController:
         self.process = None
         self.receiver = None
 
-    def speak(self, text):
+    def speak(self, text, clip_path=None):
         message = speech_text(text)
         self.stop()
         if not message:
@@ -72,7 +75,13 @@ class SpeechController:
             raise RuntimeError("Озвучивание доступно только в Windows")
         context = multiprocessing.get_context("spawn")
         receiver, sender = context.Pipe(duplex=False)
-        process = context.Process(target=_speak_windows, args=(message, sender), daemon=True)
+        if clip_path is not None:
+            from pathlib import Path
+            path = Path(clip_path)
+            if not path.is_absolute() or path.suffix.casefold() != ".wav":
+                raise ValueError("Нужен абсолютный путь к WAV-файлу")
+            clip_path = str(path)
+        process = context.Process(target=_speak_windows, args=(message, sender, clip_path), daemon=True)
         try:
             process.start()
         except Exception:
