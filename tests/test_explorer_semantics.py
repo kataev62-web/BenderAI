@@ -240,3 +240,31 @@ def test_capture_after_exact_jit_grant_records_only_fresh_verified_requested_nav
     capture.poll();clock[0]=31;capture.poll()
     assert [step.action for step in recorder.steps]==(['explorer_navigate'] if still_requested else [])
     if still_requested:assert recorder.steps[0].args['path']==str(outside)
+
+
+def test_reviewed_external_creation_persists_and_replays_without_overwrite(shell_backend,tmp_path):
+    from bender_ai.actions import ActionRegistry,Executor
+    from bender_ai.explorer import ExplorerCapture
+    from bender_ai.learning import Recorder
+    from bender_ai.storage import Store
+    backend,policy,selector,parent,_,state = shell_backend
+    recorder=Recorder(windows=[('explorer.exe','Allowed')]);recorder.start()
+    capture=ExplorerCapture(backend,recorder,selector);capture.poll()
+    created=parent/'UserCreated';created.mkdir()
+    capture.poll()
+    assert capture.pending_creations==[{'parent':str(parent),'name':'UserCreated'}]
+    with pytest.raises(Denied):capture.approve_creation(0,confirmed=False)
+    assert recorder.steps==[]
+    assert capture.approve_creation(0,confirmed=True)
+    assert capture.pending_creations==[]
+    store=Store(tmp_path/'reviewed-skill.db')
+    try:
+        skill=store.save_skill(recorder.finish('Reviewed create'))
+        store.close();store=Store(tmp_path/'reviewed-skill.db')
+        runner=Executor(ActionRegistry(policy,store,explorer=backend),store)
+        assert runner.run(store.load_skill(skill),confirmed=True).status=='failed'
+        assert created.is_dir()  # Existing result is never overwritten.
+        preserved=parent/'Preserved';created.rename(preserved)  # Owned test data only.
+        assert runner.run(store.load_skill(skill),confirmed=True).status=='success'
+        assert created.is_dir() and preserved.is_dir()
+    finally:store.close()
